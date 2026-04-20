@@ -53,6 +53,8 @@ def close_conn() -> None:
 
 
 def init_db() -> None:
+    import flatpilot.schemas  # noqa: F401  — side-effect registration
+
     conn = get_conn()
     for create_sql in SCHEMAS.values():
         conn.execute(create_sql)

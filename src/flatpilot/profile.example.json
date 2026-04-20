@@ -1,0 +1,35 @@
+{
+  "country": "DE",
+  "city": "Frankfurt am Main",
+  "radius_km": 25,
+  "district_allowlist": [],
+  "home_lat": null,
+  "home_lng": null,
+  "rent_min_warm": 1000,
+  "rent_max_warm": 1500,
+  "rooms_min": 2,
+  "rooms_max": 3,
+  "household_size": 2,
+  "kids": 0,
+  "pets": [],
+  "status": "employed",
+  "net_income_eur": 3000,
+  "move_in_date": "2026-06-01",
+  "smoker": false,
+  "furnished_pref": "any",
+  "min_contract_months": null,
+  "wbs": {
+    "status": "none"
+  },
+  "notifications": {
+    "telegram": {
+      "enabled": false,
+      "bot_token_env": "TELEGRAM_BOT_TOKEN",
+      "chat_id": ""
+    },
+    "email": {
+      "enabled": false,
+      "smtp_env": "SMTP"
+    }
+  }
+}

@@ -23,7 +23,30 @@ Under active development. Phase 1 MVP is in progress — see the [Beads](https:/
 
 ## Install
 
-_Instructions land here once Phase 1 lands. Requires Python 3.11+ and Playwright Chromium._
+Two paths. Pick whichever you prefer — they share state via `~/.flatpilot/` on the host.
+
+### Local (Python 3.11+)
+
+```bash
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install -e '.[dev]'
+playwright install chromium
+flatpilot --help
+```
+
+### Docker
+
+Bypasses the Python and Playwright-browser install steps. Requires Docker and Docker Compose.
+
+```bash
+cp .env.example .env            # add Telegram / SMTP creds later
+docker compose build            # ~1–2 min on first build
+docker compose run --rm flatpilot --help
+docker compose run --rm flatpilot init       # interactive wizard
+docker compose run --rm flatpilot run        # one scrape + match + notify pass
+```
+
+State lives in `~/.flatpilot/` on the host by default (shared with a local install). Override via `FLATPILOT_DATA_DIR` in `.env`.
 
 ## Usage (planned)
 

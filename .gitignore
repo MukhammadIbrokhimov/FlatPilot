@@ -72,3 +72,6 @@ out/
 # Beads / Dolt files (added by bd init)
 .dolt/
 .beads-credential-key
+
+# Perles (beads web UI) — per-machine config
+.perles/

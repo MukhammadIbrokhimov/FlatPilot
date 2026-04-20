@@ -33,7 +33,9 @@ def init() -> None:
 @app.command()
 def doctor() -> None:
     """Check that the install is healthy."""
-    _placeholder("doctor")
+    from flatpilot.doctor import run as run_doctor
+
+    raise typer.Exit(run_doctor())
 
 
 @app.command()

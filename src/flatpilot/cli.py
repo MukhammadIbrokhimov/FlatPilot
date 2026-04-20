@@ -8,6 +8,8 @@ behaviour in without renaming commands.
 
 from __future__ import annotations
 
+import logging
+
 import typer
 from rich import print as rprint
 
@@ -18,6 +20,15 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+
+
+@app.callback()
+def _bootstrap(
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable DEBUG logging."),
+) -> None:
+    from flatpilot.log import setup_logging
+
+    setup_logging(level=logging.DEBUG if verbose else logging.INFO)
 
 
 def _placeholder(command: str) -> None:

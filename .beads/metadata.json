@@ -1,0 +1,8 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "FlatPilot",
+  "project_id": "fe833223-f428-4fbe-a1a0-e430a523601d",
+  "global_dolt_database": "beads_global"
+}

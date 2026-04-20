@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "flatpilot"
+version = "0.1.0"
+description = "A flat-hunting agent for the German rental market."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Mukhammad Ibrokhimov", email = "ibrohimovmuhammad2020@gmail.com" },
+]
+keywords = ["flat", "rental", "germany", "scraping", "telegram"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12",
+    "playwright>=1.40",
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.6",
+    "geopy>=2.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.3",
+]
+
+[project.scripts]
+flatpilot = "flatpilot.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/MukhammadIbrokhimov/FlatPilot"
+Issues = "https://github.com/MukhammadIbrokhimov/FlatPilot/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/flatpilot"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

@@ -87,9 +87,62 @@ def match() -> None:
 
 
 @app.command()
-def notify() -> None:
+def notify(
+    test: bool = typer.Option(
+        False, "--test", help="Send a synthetic flat to every enabled channel."
+    ),
+) -> None:
     """Deliver any unsent matches via Telegram / email."""
-    _placeholder("notify")
+    from rich.console import Console
+
+    from flatpilot.notifications.dispatcher import (
+        dispatch_pending,
+        enabled_channels,
+        send_test,
+    )
+    from flatpilot.profile import load_profile
+
+    console = Console()
+    profile = load_profile()
+    if profile is None:
+        console.print(
+            "[red]No profile at ~/.flatpilot/profile.json — run `flatpilot init`.[/red]"
+        )
+        raise typer.Exit(1)
+
+    channels = enabled_channels(profile)
+    if not channels:
+        console.print("[yellow]No channels enabled in profile — nothing to send.[/yellow]")
+        return
+
+    if test:
+        results = send_test(profile)
+        any_failed = False
+        for channel, status in results.items():
+            if status == "sent":
+                console.print(f"[green]{channel}[/green]: sent")
+            else:
+                any_failed = True
+                console.print(f"[red]{channel}[/red]: {status}")
+        if any_failed:
+            raise typer.Exit(1)
+        return
+
+    summary = dispatch_pending(profile)
+    console.print(
+        f"Processed [bold]{summary['processed']}[/bold] matched flats"
+    )
+    for channel in channels:
+        sent = summary["sent"].get(channel, 0)
+        failed = summary["failed"].get(channel, 0)
+        parts = []
+        if sent:
+            parts.append(f"[green]{sent} sent[/green]")
+        if failed:
+            parts.append(f"[red]{failed} failed[/red]")
+        if not parts:
+            parts.append("[dim]nothing pending[/dim]")
+        console.print(f"  {channel}: {', '.join(parts)}")
 
 
 @app.command()

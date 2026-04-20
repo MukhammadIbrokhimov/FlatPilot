@@ -67,7 +67,23 @@ def scrape() -> None:
 @app.command()
 def match() -> None:
     """Apply the matcher to unmatched listings and write matches."""
-    _placeholder("match")
+    from rich.console import Console
+
+    from flatpilot.matcher.runner import ProfileMissing, run_match
+
+    console = Console()
+    try:
+        summary = run_match()
+    except ProfileMissing as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    console.print(
+        f"Processed [bold]{summary['processed']}[/bold] flats "
+        f"(profile {summary['profile_hash']}): "
+        f"[green]{summary['match']} match[/green], "
+        f"[yellow]{summary['reject']} reject[/yellow]"
+    )
 
 
 @app.command()

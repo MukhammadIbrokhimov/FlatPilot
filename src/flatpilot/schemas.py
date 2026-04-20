@@ -50,3 +50,20 @@ CREATE TABLE IF NOT EXISTS flats (
 """
 
 SCHEMAS["flats"] = FLATS_CREATE_SQL
+
+
+MATCHES_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS matches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    flat_id INTEGER NOT NULL REFERENCES flats(id) ON DELETE CASCADE,
+    profile_version_hash TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK (decision IN ('match', 'reject', 'skipped')),
+    decision_reasons_json TEXT NOT NULL DEFAULT '[]',
+    decided_at TEXT NOT NULL,
+    notified_at TEXT,
+    notified_channels_json TEXT,
+    UNIQUE (flat_id, profile_version_hash, decision)
+)
+"""
+
+SCHEMAS["matches"] = MATCHES_CREATE_SQL

@@ -1,0 +1,59 @@
+# Git and metadata
+.git
+.gitignore
+.gitattributes
+.github
+
+# Beads / Dolt state (not needed inside the image)
+.beads
+.dolt
+.beads-credential-key
+.perles
+
+# IDE / editor / agent working state
+.vscode
+.idea
+.claude
+*.swp
+*.swo
+*~
+
+# Python build artifacts
+__pycache__
+*.py[cod]
+*.egg
+*.egg-info
+build
+dist
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# Virtualenvs
+.venv
+venv
+env
+ENV
+
+# Node (Phase 5 web UI)
+node_modules
+.next
+out
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets and user state
+.env
+.env.local
+data
+
+# Logs
+*.log
+logs
+
+# Docker files themselves don't need to ship inside the image
+Dockerfile
+docker-compose.yml
+.dockerignore

@@ -50,6 +50,9 @@ Thumbs.db
 .env
 .env.local
 
+# Docker bind-mount target when users set FLATPILOT_DATA_DIR=./data
+data/
+
 # Logs
 logs/
 *.log

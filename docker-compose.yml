@@ -1,0 +1,25 @@
+# Single-service compose for the FlatPilot CLI. Phase 1 is a single process;
+# the web UI, worker, and DB services land in Phase 5.
+#
+# Common invocations:
+#   docker compose run --rm flatpilot init        # interactive setup wizard
+#   docker compose run --rm flatpilot run         # one scrape + match + notify pass
+#   docker compose run --rm flatpilot dashboard   # build the HTML dashboard
+#
+# State (SQLite DB, geocode cache, scraper sessions) lives on the host at
+# ${FLATPILOT_DATA_DIR:-~/.flatpilot}. By default this is the same directory
+# a local install uses, so state is shared between the two code paths.
+
+services:
+  flatpilot:
+    build: .
+    image: flatpilot:dev
+    env_file:
+      - .env
+    volumes:
+      # Mount the repo so source edits pick up without rebuilding the image
+      # (works because pip installed the package in editable mode).
+      - .:/app
+      - ${FLATPILOT_DATA_DIR:-${HOME}/.flatpilot}:/root/.flatpilot
+    tty: true
+    stdin_open: true

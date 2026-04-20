@@ -79,7 +79,41 @@ def notify() -> None:
 @app.command()
 def status() -> None:
     """Show DB counts and last-run info."""
-    _placeholder("status")
+    from rich.console import Console
+    from rich.table import Table
+
+    from flatpilot.database import init_db
+    from flatpilot.stats import get_stats
+
+    init_db()
+    s = get_stats()
+    console = Console()
+
+    summary = Table(title="FlatPilot status")
+    summary.add_column("Metric")
+    summary.add_column("Value", justify="right")
+    summary.add_row("Total flats", str(s["total_flats"]))
+    summary.add_row("New last 24h", str(s["new_last_24h"]))
+    summary.add_row("Matched", str(s["matched"]))
+    summary.add_row("Notified", str(s["notified"]))
+    summary.add_row("Last scrape", s["last_scrape_at"] or "—")
+    console.print(summary)
+
+    if s["notifications_by_channel"]:
+        ch = Table(title="Notifications by channel")
+        ch.add_column("Channel")
+        ch.add_column("Count", justify="right")
+        for channel, count in sorted(s["notifications_by_channel"].items()):
+            ch.add_row(channel, str(count))
+        console.print(ch)
+
+    if s["rejected_by_reason"]:
+        rj = Table(title="Rejections by reason")
+        rj.add_column("Reason")
+        rj.add_column("Count", justify="right")
+        for reason, count in sorted(s["rejected_by_reason"].items(), key=lambda x: -x[1]):
+            rj.add_row(reason, str(count))
+        console.print(rj)
 
 
 @app.command()

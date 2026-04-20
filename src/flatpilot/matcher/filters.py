@@ -128,11 +128,34 @@ def filter_contract(flat: Mapping[str, Any], profile: Profile) -> FilterResult:
     return True, None
 
 
+def filter_radius(flat: Mapping[str, Any], profile: Profile) -> FilterResult:
+    # Radius check is skipped when the profile has no home coordinates yet
+    # (e.g. before the setup wizard geocodes the user's address) — rather
+    # than rejecting every flat, let the other filters speak.
+    if profile.home_lat is None or profile.home_lng is None:
+        return True, None
+
+    # Local import: distance.py pulls in httpx and only runs the Nominatim
+    # path when coords are missing, so the lazy import keeps test runs that
+    # stub out the matcher layer cheap.
+    from flatpilot.matcher.distance import haversine_km, resolve_flat_coords
+
+    coords = resolve_flat_coords(flat, profile)
+    if coords is None:
+        return False, "location_unknown"
+    flat_lat, flat_lng = coords
+    distance_km = haversine_km(profile.home_lat, profile.home_lng, flat_lat, flat_lng)
+    if distance_km > profile.radius_km:
+        return False, "outside_radius"
+    return True, None
+
+
 FILTERS: list[Filter] = [
     filter_rent_band,
     filter_rooms_band,
     filter_wbs,
     filter_district,
+    filter_radius,
     filter_pets,
     filter_move_in,
     filter_furnished,

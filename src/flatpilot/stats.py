@@ -19,6 +19,8 @@ class Stats(TypedDict):
     matched: int
     notified: int
     rejected_by_reason: dict[str, int]
+    last_scrape_at: str | None
+    notifications_by_channel: dict[str, int]
 
 
 def get_stats() -> Stats:
@@ -40,6 +42,8 @@ def get_stats() -> Stats:
         "SELECT COUNT(*) FROM matches WHERE notified_at IS NOT NULL"
     ).fetchone()[0]
 
+    last_scrape_at = conn.execute("SELECT MAX(scraped_at) FROM flats").fetchone()[0]
+
     rejected_by_reason: dict[str, int] = {}
     for (reasons_json,) in conn.execute(
         "SELECT decision_reasons_json FROM matches WHERE decision = 'reject'"
@@ -51,10 +55,24 @@ def get_stats() -> Stats:
         for reason in reasons:
             rejected_by_reason[reason] = rejected_by_reason.get(reason, 0) + 1
 
+    notifications_by_channel: dict[str, int] = {}
+    for (channels_json,) in conn.execute(
+        "SELECT notified_channels_json FROM matches "
+        "WHERE notified_at IS NOT NULL AND notified_channels_json IS NOT NULL"
+    ):
+        try:
+            channels = json.loads(channels_json)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        for channel in channels:
+            notifications_by_channel[channel] = notifications_by_channel.get(channel, 0) + 1
+
     return {
         "total_flats": total_flats,
         "new_last_24h": new_last_24h,
         "matched": matched,
         "notified": notified,
         "rejected_by_reason": rejected_by_reason,
+        "last_scrape_at": last_scrape_at,
+        "notifications_by_channel": notifications_by_channel,
     }

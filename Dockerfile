@@ -1,8 +1,10 @@
 # Official Playwright Python image: Chromium plus the Linux system packages
 # Playwright needs are already installed. We re-run `playwright install` after
 # pip install so the browser binaries match whatever version pip resolves for
-# the `playwright` Python package.
-FROM mcr.microsoft.com/playwright/python:v1.48.0-jammy
+# the `playwright` Python package. The -noble variant ships Python 3.12 —
+# the -jammy variant is still on 3.10, which does not satisfy pyproject's
+# `requires-python >= 3.11`.
+FROM mcr.microsoft.com/playwright/python:v1.48.0-noble
 
 USER root
 WORKDIR /app

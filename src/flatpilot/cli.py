@@ -9,10 +9,10 @@ behaviour in without renaming commands.
 from __future__ import annotations
 
 import logging
+from datetime import UTC
 
 import typer
 from rich import print as rprint
-
 
 app = typer.Typer(
     name="flatpilot",
@@ -63,9 +63,104 @@ def run(
 
 
 @app.command()
-def scrape() -> None:
-    """Scrape all configured platforms and store raw listings."""
-    _placeholder("scrape")
+def scrape(
+    platform: str | None = typer.Option(
+        None, "--platform", "-p", help="Scrape only this platform (default: all registered)."
+    ),
+    watch: bool = typer.Option(False, "--watch", help="Loop until Ctrl-C."),
+    interval: int = typer.Option(
+        120, "--interval", help="Seconds between passes when --watch is set (default 120)."
+    ),
+) -> None:
+    """Scrape configured platforms and insert new listings into the flats table."""
+    import time
+
+    from rich.console import Console
+
+    import flatpilot.scrapers.wg_gesucht  # noqa: F401 — triggers @register
+    from flatpilot.database import init_db
+    from flatpilot.profile import load_profile
+    from flatpilot.scrapers import all_scrapers, get_scraper
+
+    console = Console()
+
+    profile = load_profile()
+    if profile is None:
+        console.print(
+            "[red]No profile at ~/.flatpilot/profile.json — run `flatpilot init` first.[/red]"
+        )
+        raise typer.Exit(1)
+
+    init_db()
+
+    if platform:
+        try:
+            scrapers = [get_scraper(platform)()]
+        except KeyError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
+    else:
+        scrapers = [cls() for cls in all_scrapers()]
+
+    if not scrapers:
+        console.print("[yellow]No scrapers registered.[/yellow]")
+        raise typer.Exit(1)
+
+    try:
+        while True:
+            _run_scrape_pass(scrapers, profile, console)
+            if not watch:
+                break
+            console.print(f"[dim]Sleeping {interval}s before next pass (Ctrl-C to stop)…[/dim]")
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Stopped.[/yellow]")
+
+
+def _run_scrape_pass(scrapers: list, profile, console) -> None:
+    from datetime import datetime
+
+    from flatpilot.database import get_conn
+    from flatpilot.scrapers.session import RateLimitedError
+
+    conn = get_conn()
+    now = datetime.now(UTC).isoformat()
+    for scraper in scrapers:
+        plat = scraper.platform
+        try:
+            flats = list(scraper.fetch_new(profile))
+        except RateLimitedError as exc:
+            console.print(f"[yellow]{plat}: {exc} — skipping this pass[/yellow]")
+            continue
+        except Exception as exc:
+            console.print(
+                f"[red]{plat}: fetch failed ({exc.__class__.__name__}: {exc})[/red]"
+            )
+            continue
+
+        new_count = 0
+        for flat in flats:
+            if _insert_flat(conn, flat, plat, now):
+                new_count += 1
+        console.print(
+            f"{plat}: [bold]{len(flats)}[/bold] listings, "
+            f"[green]{new_count}[/green] new"
+        )
+
+
+def _insert_flat(conn, flat, platform: str, now: str) -> bool:
+    row = dict(flat)
+    row["platform"] = platform
+    row["scraped_at"] = now
+    row["first_seen_at"] = now
+    cols = list(row.keys())
+    placeholders = ", ".join(f":{c}" for c in cols)
+    sql = (
+        f"INSERT OR IGNORE INTO flats ({', '.join(cols)}) "
+        f"VALUES ({placeholders})"
+    )
+    cursor = conn.execute(sql, row)
+    return cursor.rowcount > 0
 
 
 @app.command()

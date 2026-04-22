@@ -56,10 +56,9 @@ import logging
 import sys
 import time
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
-
 
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0"
@@ -254,7 +253,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     storage_state = str(STATE_FILE) if STATE_FILE.exists() else None
-    deadline = datetime.now(timezone.utc) + timedelta(minutes=args.duration_min)
+    deadline = datetime.now(UTC) + timedelta(minutes=args.duration_min)
     counts: Counter[str] = Counter()
 
     with sync_playwright() as p:
@@ -276,13 +275,13 @@ def main(argv: list[str] | None = None) -> int:
             logger.info("warm-up complete; state saved to %s", STATE_FILE)
 
             poll_num = 0
-            while datetime.now(timezone.utc) < deadline:
+            while datetime.now(UTC) < deadline:
                 poll_num += 1
                 outcome = _poll(context, url, logger)
                 counts[outcome] += 1
                 logger.info("poll %d: %s", poll_num, outcome)
                 _save_state(context)
-                if datetime.now(timezone.utc) + timedelta(seconds=args.interval) >= deadline:
+                if datetime.now(UTC) + timedelta(seconds=args.interval) >= deadline:
                     break
                 time.sleep(args.interval)
         except KeyboardInterrupt:

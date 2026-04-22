@@ -17,7 +17,6 @@ from rich.table import Table
 
 from flatpilot import config
 
-
 CheckFn = Callable[[], "tuple[str, str]"]
 
 
@@ -96,8 +95,10 @@ def run(console: Console | None = None) -> int:
 
     Returns 0 if every required check passed, 1 otherwise. Optional checks
     that come back missing do not affect the exit code — they're reminders.
+
+    ``config.load_env()`` is now called in the CLI ``_bootstrap`` callback
+    so every command sees ``~/.flatpilot/.env`` — no need to repeat it here.
     """
-    config.load_env()
     out = console or Console()
     table = Table(title="FlatPilot doctor")
     table.add_column("Check")

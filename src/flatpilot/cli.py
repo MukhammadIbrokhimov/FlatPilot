@@ -26,9 +26,15 @@ app = typer.Typer(
 def _bootstrap(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable DEBUG logging."),
 ) -> None:
+    from flatpilot.config import load_env
     from flatpilot.log import setup_logging
 
     setup_logging(level=logging.DEBUG if verbose else logging.INFO)
+    # Load ~/.flatpilot/.env (or ./.env as fallback) so commands that look
+    # up secrets via os.environ — notify, run, scrape — see credentials
+    # that users put in the app dir. dotenv does not overwrite vars that
+    # are already set, so Docker's compose-injected env still wins.
+    load_env()
 
 
 def _placeholder(command: str) -> None:

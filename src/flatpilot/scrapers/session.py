@@ -76,6 +76,10 @@ class SessionConfig:
     # resize / scroll. Scrape paths keep the pinned viewport because the
     # D0 probe validated that fingerprint.
     no_viewport: bool = False
+    # Extra flags forwarded to chromium.launch(args=…). Interactive
+    # flows typically want "--start-maximized" so modals like the
+    # consent banner are fully reachable on small laptop screens.
+    launch_args: tuple[str, ...] = ()
     warmup_url: str | None = None
     consent_selectors: tuple[str, ...] = ()
     nav_timeout_ms: int = DEFAULT_NAV_TIMEOUT_MS
@@ -105,7 +109,10 @@ def polite_session(config: SessionConfig) -> Iterator[Any]:
     storage = str(state_path) if state_path.exists() else None
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=config.headless)
+        browser = pw.chromium.launch(
+            headless=config.headless,
+            args=list(config.launch_args),
+        )
         try:
             context_kwargs: dict[str, Any] = {
                 "user_agent": config.user_agent,

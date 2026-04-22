@@ -16,6 +16,7 @@ from rich.console import Console
 from rich.table import Table
 
 from flatpilot import config
+from flatpilot.profile import load_profile
 
 CheckFn = Callable[[], "tuple[str, str]"]
 
@@ -58,24 +59,39 @@ def _check_playwright() -> tuple[str, str]:
 
 
 def _check_telegram() -> tuple[str, str]:
-    bot = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat = os.environ.get("TELEGRAM_CHAT_ID")
-    if bot and chat:
-        return "OK", "BOT_TOKEN + CHAT_ID set"
-    missing = [
-        name
-        for name, value in (("TELEGRAM_BOT_TOKEN", bot), ("TELEGRAM_CHAT_ID", chat))
-        if not value
-    ]
-    return "optional", f"missing: {', '.join(missing)}"
+    # The bot token is env-based (var name chosen in the profile, default
+    # TELEGRAM_BOT_TOKEN) but the chat_id lives in profile.json — checking
+    # for a TELEGRAM_CHAT_ID env var as the old implementation did would
+    # always report 'missing' for correctly configured users.
+    profile = load_profile()
+    if profile is None:
+        return "optional", "no profile — run `flatpilot init`"
+    tg = profile.notifications.telegram
+    if not tg.enabled:
+        return "optional", "disabled in profile"
+    missing: list[str] = []
+    if not os.environ.get(tg.bot_token_env):
+        missing.append(f"${tg.bot_token_env}")
+    if not tg.chat_id:
+        missing.append("profile.notifications.telegram.chat_id")
+    if missing:
+        return "optional", f"enabled but {', '.join(missing)}"
+    return "OK", f"token from ${tg.bot_token_env}, chat_id in profile"
 
 
 def _check_smtp() -> tuple[str, str]:
+    # Same profile-aware shape as Telegram: only complain about SMTP_*
+    # env vars when the user has enabled email notifications in profile.
+    profile = load_profile()
+    if profile is None:
+        return "optional", "no profile — run `flatpilot init`"
+    if not profile.notifications.email.enabled:
+        return "optional", "disabled in profile"
     keys = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM"]
     missing = [k for k in keys if not os.environ.get(k)]
-    if not missing:
-        return "OK", "HOST/PORT/USER/PASSWORD/FROM set"
-    return "optional", f"missing: {', '.join(missing)}"
+    if missing:
+        return "optional", f"enabled but missing: {', '.join(missing)}"
+    return "OK", "HOST/PORT/USER/PASSWORD/FROM set"
 
 
 CHECKS: list[tuple[str, CheckFn]] = [

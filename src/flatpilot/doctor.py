@@ -16,7 +16,7 @@ from rich.console import Console
 from rich.table import Table
 
 from flatpilot import config
-from flatpilot.profile import load_profile
+from flatpilot.profile import Profile, load_profile
 
 CheckFn = Callable[[], "tuple[str, str]"]
 
@@ -58,12 +58,25 @@ def _check_playwright() -> tuple[str, str]:
     return "OK", f"Chromium at {exec_path}"
 
 
+def _safe_load_profile() -> tuple[Profile | None, str | None]:
+    # doctor must not crash when profile.json is malformed — that's
+    # exactly the scenario a user runs it to diagnose. ValidationError
+    # (invalid schema / invalid JSON) inherits from ValueError; OSError
+    # covers unreadable files.
+    try:
+        return load_profile(), None
+    except (ValueError, OSError) as exc:
+        return None, f"profile unreadable: {type(exc).__name__}"
+
+
 def _check_telegram() -> tuple[str, str]:
     # The bot token is env-based (var name chosen in the profile, default
     # TELEGRAM_BOT_TOKEN) but the chat_id lives in profile.json — checking
     # for a TELEGRAM_CHAT_ID env var as the old implementation did would
     # always report 'missing' for correctly configured users.
-    profile = load_profile()
+    profile, err = _safe_load_profile()
+    if err is not None:
+        return "optional", err
     if profile is None:
         return "optional", "no profile — run `flatpilot init`"
     tg = profile.notifications.telegram
@@ -82,7 +95,9 @@ def _check_telegram() -> tuple[str, str]:
 def _check_smtp() -> tuple[str, str]:
     # Same profile-aware shape as Telegram: only complain about SMTP_*
     # env vars when the user has enabled email notifications in profile.
-    profile = load_profile()
+    profile, err = _safe_load_profile()
+    if err is not None:
+        return "optional", err
     if profile is None:
         return "optional", "no profile — run `flatpilot init`"
     if not profile.notifications.email.enabled:

@@ -55,11 +55,101 @@ def doctor() -> None:
 
 @app.command()
 def run(
-    watch: bool = typer.Option(False, "--watch", help="Keep polling."),
+    watch: bool = typer.Option(False, "--watch", help="Keep polling. Defers to G2."),
     interval: int = typer.Option(120, "--interval", help="Seconds between passes."),
 ) -> None:
     """One scrape + match + notify pass (add --watch to loop)."""
-    _placeholder("run")
+    from rich.console import Console
+
+    from flatpilot.database import init_db
+    from flatpilot.profile import load_profile
+
+    console = Console()
+
+    profile = load_profile()
+    if profile is None:
+        console.print(
+            "[red]No profile at ~/.flatpilot/profile.json — run `flatpilot init` first.[/red]"
+        )
+        raise typer.Exit(1)
+
+    init_db()
+
+    failures = _run_pipeline_once(profile, console)
+    if failures:
+        raise typer.Exit(1)
+
+
+def _run_pipeline_once(profile, console) -> int:
+    """Run one scrape → match → notify pass. Return number of stage failures."""
+    failures = 0
+
+    console.rule("scrape")
+    try:
+        _run_pipeline_scrape(profile, console)
+    except Exception as exc:
+        console.print(f"[red]scrape failed: {exc.__class__.__name__}: {exc}[/red]")
+        failures += 1
+
+    console.rule("match")
+    try:
+        _run_pipeline_match(console)
+    except Exception as exc:
+        console.print(f"[red]match failed: {exc.__class__.__name__}: {exc}[/red]")
+        failures += 1
+
+    console.rule("notify")
+    try:
+        _run_pipeline_notify(profile, console)
+    except Exception as exc:
+        console.print(f"[red]notify failed: {exc.__class__.__name__}: {exc}[/red]")
+        failures += 1
+
+    return failures
+
+
+def _run_pipeline_scrape(profile, console) -> None:
+    import flatpilot.scrapers.wg_gesucht  # noqa: F401 — triggers @register
+    from flatpilot.scrapers import all_scrapers
+
+    scrapers = [cls() for cls in all_scrapers()]
+    if not scrapers:
+        console.print("[yellow]no scrapers registered[/yellow]")
+        return
+    _run_scrape_pass(scrapers, profile, console)
+
+
+def _run_pipeline_match(console) -> None:
+    from flatpilot.matcher.runner import run_match
+
+    summary = run_match()
+    console.print(
+        f"[green]{summary['match']} matched[/green], "
+        f"[yellow]{summary['reject']} rejected[/yellow] "
+        f"(processed {summary['processed']} flats, profile {summary['profile_hash']})"
+    )
+
+
+def _run_pipeline_notify(profile, console) -> None:
+    from flatpilot.notifications.dispatcher import dispatch_pending, enabled_channels
+
+    channels = enabled_channels(profile)
+    if not channels:
+        console.print("[dim]no channels enabled — skipping[/dim]")
+        return
+    summary = dispatch_pending(profile)
+    if summary["processed"] == 0:
+        console.print("[dim]nothing pending[/dim]")
+        return
+    parts = []
+    for ch in channels:
+        sent = summary["sent"].get(ch, 0)
+        failed = summary["failed"].get(ch, 0)
+        parts.append(
+            f"{ch}: [green]{sent} sent[/green]"
+            + (f", [red]{failed} failed[/red]" if failed else "")
+        )
+    console.print(" · ".join(parts))
 
 
 @app.command()

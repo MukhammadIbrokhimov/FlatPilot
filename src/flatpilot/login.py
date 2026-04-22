@@ -97,8 +97,25 @@ def run_login(platform: str, console: Console) -> Path:
         with contextlib.suppress(EOFError):
             input()
 
-    expiry = _earliest_expiry(state_path)
-    _print_success(console, platform, state_path, expiry)
+        # Save state + surface success BEFORE attempting to close the
+        # browser. Authenticated dashboards (WG-Gesucht in particular)
+        # commonly register beforeunload handlers that cause page.close()
+        # to block indefinitely in headed mode; by snapshotting cookies
+        # here we guarantee they land on disk even if the user has to
+        # Ctrl-C the close step.
+        context.storage_state(path=str(state_path))
+        expiry = _earliest_expiry(state_path)
+        _print_success(console, platform, state_path, expiry)
+        console.print(
+            "[dim]Closing browser… (safe to Ctrl-C if this hangs — "
+            "cookies are already saved).[/dim]"
+        )
+        # Skip the beforeunload dialog so the subsequent close() has a
+        # realistic chance of returning. session_page's finally will
+        # call close() again, but that is a no-op on a closed page.
+        with contextlib.suppress(Exception):
+            pg.close(run_before_unload=False)
+
     return state_path
 
 

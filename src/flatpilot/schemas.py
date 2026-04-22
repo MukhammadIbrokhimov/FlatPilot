@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from flatpilot.database import SCHEMAS
 
-
 FLATS_CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS flats (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,3 +66,35 @@ CREATE TABLE IF NOT EXISTS matches (
 """
 
 SCHEMAS["matches"] = MATCHES_CREATE_SQL
+
+
+# Each row is one outgoing contact attempt for a flat. Multiple rows per
+# flat are allowed (e.g. a failed submit followed by a retry) — idempotency
+# belongs in the apply command (L4), not the schema. The flat columns are
+# denormalised on purpose: a landlord may take the listing down days after
+# we contacted them, but we still want to see what we actually sent.
+APPLICATIONS_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS applications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    flat_id INTEGER NOT NULL REFERENCES flats(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+    listing_url TEXT NOT NULL,
+    title TEXT NOT NULL,
+    rent_warm_eur REAL,
+    rooms REAL,
+    size_sqm REAL,
+    district TEXT,
+    applied_at TEXT NOT NULL,
+    method TEXT NOT NULL CHECK (method IN ('manual', 'auto')),
+    message_sent TEXT,
+    attachments_sent_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL CHECK (
+        status IN ('submitted', 'failed', 'viewing_invited', 'rejected', 'no_response')
+    ),
+    response_received_at TEXT,
+    response_text TEXT,
+    notes TEXT
+)
+"""
+
+SCHEMAS["applications"] = APPLICATIONS_CREATE_SQL

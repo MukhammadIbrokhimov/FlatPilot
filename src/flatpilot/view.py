@@ -134,7 +134,18 @@ def _card(item: dict[str, Any]) -> str:
         + (f"<dt>Posted</dt><dd>{escape(str(posted))}</dd>" if posted else "")
         + (f"<dt>Decided</dt><dd>{escape(str(decided))}</dd>" if decided else "")
         + "</dl>"
-        + (f'<p class="url">{escape(url)}</p>' if url else "")
+        + (
+            (
+                '<div class="actions">'
+                f'<a class="open" href="{escape(url, quote=True)}" '
+                'target="_blank" rel="noopener noreferrer">Open listing</a>'
+                f'<button class="copy" type="button" '
+                f'data-url="{escape(url, quote=True)}">Copy link</button>'
+                '</div>'
+            )
+            if url
+            else ""
+        )
         + reasons_html
         + "</article>"
     )
@@ -199,7 +210,15 @@ def _render(
   .card dl {{ display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 0.75rem; margin: 0.5rem 0; }}
   .card dt {{ color: #888; font-size: 0.85rem; }}
   .card dd {{ margin: 0; font-size: 0.95rem; }}
-  .card .url {{ word-break: break-all; font-size: 0.85rem; color: var(--accent); margin: 0.5rem 0 0; }}
+  .card .actions {{ display: flex; gap: 0.5rem; align-items: center; margin: 0.5rem 0 0; }}
+  .card .actions a.open {{ color: var(--accent); text-decoration: none; font-size: 0.9rem;
+                           border: 1px solid var(--accent); padding: 0.25rem 0.6rem; border-radius: 4px; }}
+  .card .actions a.open:hover {{ background: var(--accent); color: white; }}
+  .card .actions button.copy {{ font: inherit; font-size: 0.85rem; padding: 0.25rem 0.6rem;
+                                 border: 1px solid rgba(128,128,128,0.4); border-radius: 4px;
+                                 background: transparent; cursor: pointer; color: inherit; }}
+  .card .actions button.copy:hover {{ background: rgba(128,128,128,0.1); }}
+  .card .actions button.copy.copied {{ color: #2a7; border-color: #2a7; }}
   .card .reasons {{ color: #c33; font-size: 0.85rem; margin: 0.4rem 0 0; }}
 </style>
 </head>
@@ -278,6 +297,23 @@ def _render(
     el.addEventListener('input', apply);
     el.addEventListener('change', apply);
   }});
+
+  document.querySelectorAll('.card .actions button.copy').forEach(btn => {{
+    btn.addEventListener('click', async () => {{
+      const url = btn.dataset.url;
+      try {{
+        await navigator.clipboard.writeText(url);
+        btn.classList.add('copied');
+        const prev = btn.textContent;
+        btn.textContent = 'Copied';
+        setTimeout(() => {{ btn.classList.remove('copied'); btn.textContent = prev; }}, 1500);
+      }} catch (e) {{
+        btn.textContent = 'Failed';
+        setTimeout(() => {{ btn.textContent = 'Copy link'; }}, 1500);
+      }}
+    }});
+  }});
+
   apply();
 }})();
 </script>

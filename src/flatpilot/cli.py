@@ -38,7 +38,11 @@ def _placeholder(command: str) -> None:
 @app.command()
 def init() -> None:
     """Run the interactive setup wizard."""
-    _placeholder("init")
+    from rich.console import Console
+
+    from flatpilot.wizard.init import run as run_wizard
+
+    run_wizard(Console())
 
 
 @app.command()

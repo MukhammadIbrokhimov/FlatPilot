@@ -60,6 +60,22 @@ class Notifications(BaseModel):
     email: EmailNotification = Field(default_factory=EmailNotification)
 
 
+class Attachments(BaseModel):
+    """Which files to attach per rental platform when submitting an apply.
+
+    All filenames are relative to ``config.ATTACHMENTS_DIR``
+    (``~/.flatpilot/attachments/``). ``default`` is the fallback when a
+    platform has no explicit ``per_platform`` entry — useful because
+    most German landlords want the same pack (SCHUFA + Gehaltsnachweise
+    + ID) regardless of listing site.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    default: list[str] = Field(default_factory=list)
+    per_platform: dict[str, list[str]] = Field(default_factory=dict)
+
+
 class Profile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -90,6 +106,7 @@ class Profile(BaseModel):
 
     wbs: WBS = Field(default_factory=WBS)
     notifications: Notifications = Field(default_factory=Notifications)
+    attachments: Attachments = Field(default_factory=Attachments)
 
     @model_validator(mode="after")
     def _ranges_are_ordered(self) -> Profile:

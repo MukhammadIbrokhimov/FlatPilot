@@ -31,5 +31,9 @@
       "enabled": false,
       "smtp_env": "SMTP"
     }
+  },
+  "attachments": {
+    "default": [],
+    "per_platform": {}
   }
 }

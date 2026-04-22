@@ -27,12 +27,17 @@ SESSIONS_DIR: Path = APP_DIR / "sessions"
 GEOCODE_CACHE_PATH: Path = APP_DIR / "geocode_cache.json"
 LOG_DIR: Path = APP_DIR / "logs"
 ENV_PATH: Path = APP_DIR / ".env"
+# User drops SCHUFA, Gehaltsnachweise, ID scans etc. here; the apply
+# command looks up which of them to attach for a given platform from
+# profile.attachments.
+ATTACHMENTS_DIR: Path = APP_DIR / "attachments"
 
 
 def ensure_dirs() -> None:
     APP_DIR.mkdir(parents=True, exist_ok=True)
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def load_env() -> None:

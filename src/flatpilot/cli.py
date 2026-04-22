@@ -60,6 +60,39 @@ def doctor() -> None:
 
 
 @app.command()
+def login(
+    platform: str = typer.Argument(..., help="Platform to log in to, e.g. 'wg-gesucht'."),
+) -> None:
+    """Open a headed browser so you can log in to a platform by hand.
+
+    Captures the resulting cookies to ~/.flatpilot/sessions/<platform>/ so
+    every headless command after this (scrape, run, future apply) reuses
+    them. Must run on the host, not in Docker — headed Playwright needs a
+    visible display.
+    """
+    from rich.console import Console
+
+    from flatpilot.login import (
+        ContainerDetectedError,
+        UnknownPlatformError,
+        run_login,
+    )
+
+    console = Console()
+    try:
+        run_login(platform, console)
+    except UnknownPlatformError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from exc
+    except ContainerDetectedError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Aborted before login finished.[/yellow]")
+        raise typer.Exit(130) from None
+
+
+@app.command()
 def run(
     watch: bool = typer.Option(False, "--watch", help="Loop until SIGINT / SIGTERM."),
     interval: int = typer.Option(

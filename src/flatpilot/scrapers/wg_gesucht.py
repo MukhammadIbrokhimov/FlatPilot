@@ -44,6 +44,11 @@ logger = logging.getLogger(__name__)
 
 HOST = "https://www.wg-gesucht.de"
 WARMUP_URL = f"{HOST}/"
+# `/mein-wg-gesucht.html` is the authenticated dashboard; unauthenticated
+# visits are redirected to the login form, so the same URL works for both
+# states and `flatpilot login` lands the user exactly where they need to
+# start typing credentials.
+LOGIN_URL = f"{HOST}/mein-wg-gesucht.html"
 
 # WG-Gesucht search URLs require the internal numeric city ID:
 #   /wohnungen-in-<CitySlug>.<city_id>.2.1.0.html

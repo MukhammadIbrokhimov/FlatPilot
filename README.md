@@ -48,11 +48,26 @@ docker compose run --rm flatpilot run        # one scrape + match + notify pass
 
 State lives in `~/.flatpilot/` on the host by default (shared with a local install). Override via `FLATPILOT_DATA_DIR` in `.env`.
 
+### Logging in to a platform (host-only)
+
+`flatpilot login <platform>` is the one command that must run on the host — it opens a headed Chromium window so you can log in by hand (2FA / captcha included). Docker on macOS/Windows has no display forwarding, so attempting this inside the container is guarded with a clear error.
+
+FlatPilot never stores your password: only the cookies your own browser receives. Those cookies persist to `~/.flatpilot/sessions/<platform>/state.json` and every subsequent `scrape` / `run` call (Docker or host) reuses them via the bind mount.
+
+Use the [Local install](#local-python-311) block above to get Python 3.11+ and Playwright on the host, then:
+
+```bash
+flatpilot login wg-gesucht  # opens the browser, press Enter here once you see your dashboard
+```
+
+Re-run any time cookies expire.
+
 ## Usage (planned)
 
 ```bash
 flatpilot init                        # one-time setup wizard (profile, rent, rooms, WBS, city, radius)
 flatpilot doctor                      # verify install
+flatpilot login wg-gesucht            # host-only; opens headed browser for cookie capture
 flatpilot run                         # single scrape + match + notify pass
 flatpilot run --watch --interval 120  # keep polling every 2 min
 flatpilot dashboard                   # open HTML dashboard of matches

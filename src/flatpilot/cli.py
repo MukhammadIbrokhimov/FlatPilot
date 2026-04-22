@@ -26,9 +26,15 @@ app = typer.Typer(
 def _bootstrap(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable DEBUG logging."),
 ) -> None:
+    from flatpilot.config import load_env
     from flatpilot.log import setup_logging
 
     setup_logging(level=logging.DEBUG if verbose else logging.INFO)
+    # Load ~/.flatpilot/.env (or ./.env as fallback) so commands that look
+    # up secrets via os.environ — notify, run, scrape — see credentials
+    # that users put in the app dir. dotenv does not overwrite vars that
+    # are already set, so Docker's compose-injected env still wins.
+    load_env()
 
 
 def _placeholder(command: str) -> None:
@@ -55,11 +61,153 @@ def doctor() -> None:
 
 @app.command()
 def run(
-    watch: bool = typer.Option(False, "--watch", help="Keep polling."),
-    interval: int = typer.Option(120, "--interval", help="Seconds between passes."),
+    watch: bool = typer.Option(False, "--watch", help="Loop until SIGINT / SIGTERM."),
+    interval: int = typer.Option(
+        120, "--interval", help="Seconds between passes when --watch is set (default 120)."
+    ),
 ) -> None:
     """One scrape + match + notify pass (add --watch to loop)."""
-    _placeholder("run")
+    import signal
+    import time
+
+    from rich.console import Console
+
+    from flatpilot.database import init_db
+    from flatpilot.profile import load_profile
+
+    console = Console()
+
+    profile = load_profile()
+    if profile is None:
+        console.print(
+            "[red]No profile at ~/.flatpilot/profile.json — run `flatpilot init` first.[/red]"
+        )
+        raise typer.Exit(1)
+
+    init_db()
+
+    if not watch:
+        failures = _run_pipeline_once(profile, console)
+        if failures:
+            raise typer.Exit(1)
+        return
+
+    stop = False
+
+    def _handler(signum, _frame) -> None:
+        nonlocal stop
+        stop = True
+        console.print(
+            f"\n[yellow]received {signal.Signals(signum).name} — "
+            f"finishing current pass, then exiting…[/yellow]"
+        )
+
+    prev_int = signal.signal(signal.SIGINT, _handler)
+    prev_term = signal.signal(signal.SIGTERM, _handler)
+
+    pass_num = 0
+    total_failures = 0
+    try:
+        while not stop:
+            pass_num += 1
+            console.rule(f"[bold]pass {pass_num}[/bold]")
+            try:
+                total_failures += _run_pipeline_once(profile, console)
+            except Exception as exc:
+                console.print(f"[red]pass {pass_num} aborted: {exc}[/red]")
+                total_failures += 1
+            if stop:
+                break
+            console.print(
+                f"[dim]sleeping {interval}s before next pass "
+                f"(Ctrl-C / SIGTERM to stop)…[/dim]"
+            )
+            for _ in range(interval):
+                if stop:
+                    break
+                time.sleep(1)
+    finally:
+        signal.signal(signal.SIGINT, prev_int)
+        signal.signal(signal.SIGTERM, prev_term)
+
+    console.print(
+        f"[bold]stopped[/bold] · {pass_num} pass(es) · "
+        f"{total_failures} stage failure(s)"
+    )
+    if total_failures:
+        raise typer.Exit(1)
+
+
+def _run_pipeline_once(profile, console) -> int:
+    """Run one scrape → match → notify pass. Return number of stage failures."""
+    failures = 0
+
+    console.rule("scrape")
+    try:
+        _run_pipeline_scrape(profile, console)
+    except Exception as exc:
+        console.print(f"[red]scrape failed: {exc.__class__.__name__}: {exc}[/red]")
+        failures += 1
+
+    console.rule("match")
+    try:
+        _run_pipeline_match(console)
+    except Exception as exc:
+        console.print(f"[red]match failed: {exc.__class__.__name__}: {exc}[/red]")
+        failures += 1
+
+    console.rule("notify")
+    try:
+        _run_pipeline_notify(profile, console)
+    except Exception as exc:
+        console.print(f"[red]notify failed: {exc.__class__.__name__}: {exc}[/red]")
+        failures += 1
+
+    return failures
+
+
+def _run_pipeline_scrape(profile, console) -> None:
+    import flatpilot.scrapers.wg_gesucht  # noqa: F401 — triggers @register
+    from flatpilot.scrapers import all_scrapers
+
+    scrapers = [cls() for cls in all_scrapers()]
+    if not scrapers:
+        console.print("[yellow]no scrapers registered[/yellow]")
+        return
+    _run_scrape_pass(scrapers, profile, console)
+
+
+def _run_pipeline_match(console) -> None:
+    from flatpilot.matcher.runner import run_match
+
+    summary = run_match()
+    console.print(
+        f"[green]{summary['match']} matched[/green], "
+        f"[yellow]{summary['reject']} rejected[/yellow] "
+        f"(processed {summary['processed']} flats, profile {summary['profile_hash']})"
+    )
+
+
+def _run_pipeline_notify(profile, console) -> None:
+    from flatpilot.notifications.dispatcher import dispatch_pending, enabled_channels
+
+    channels = enabled_channels(profile)
+    if not channels:
+        console.print("[dim]no channels enabled — skipping[/dim]")
+        return
+    summary = dispatch_pending(profile)
+    if summary["processed"] == 0:
+        console.print("[dim]nothing pending[/dim]")
+        return
+    parts = []
+    for ch in channels:
+        sent = summary["sent"].get(ch, 0)
+        failed = summary["failed"].get(ch, 0)
+        parts.append(
+            f"{ch}: [green]{sent} sent[/green]"
+            + (f", [red]{failed} failed[/red]" if failed else "")
+        )
+    console.print(" · ".join(parts))
 
 
 @app.command()

@@ -16,7 +16,7 @@ Scope:
   timezone, 1280×900 viewport. The D0 probe survived with exactly this
   fingerprint so the scraper inherits it.
 - :func:`check_rate_limit`: scrapers call this after every ``page.goto``
-  response; a 429 / 503 raises :class:`RateLimited` and the orchestrator's
+  response; a 429 / 503 raises :class:`RateLimitedError` and the orchestrator's
   ``--watch`` loop treats it as "skip this pass, try again after the
   configured interval" — the natural backoff.
 
@@ -35,7 +35,6 @@ from typing import Any
 
 from flatpilot.scrapers.base import session_dir
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -53,7 +52,7 @@ CONSENT_CLICK_TIMEOUT_MS: int = 2_000
 WARM_UP_SETTLE_SEC: float = 2.0
 
 
-class RateLimited(RuntimeError):
+class RateLimitedError(RuntimeError):
     """HTTP 429 / 503 from the target platform; abort the current pass."""
 
 
@@ -78,9 +77,9 @@ class SessionConfig:
 
 
 def check_rate_limit(status: int, platform: str) -> None:
-    """Raise :class:`RateLimited` on a 429 / 503 HTTP status."""
+    """Raise :class:`RateLimitedError` on a 429 / 503 HTTP status."""
     if status in (429, 503):
-        raise RateLimited(f"{platform}: HTTP {status}")
+        raise RateLimitedError(f"{platform}: HTTP {status}")
 
 
 @contextmanager

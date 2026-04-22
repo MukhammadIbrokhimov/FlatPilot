@@ -33,10 +33,11 @@ from flatpilot.scrapers.session import (
     DEFAULT_USER_AGENT,
     SessionConfig,
     check_rate_limit,
-    page as session_page,
     polite_session,
 )
-
+from flatpilot.scrapers.session import (
+    page as session_page,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,7 @@ _ROOMS_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*-?\s*Zimmer", re.IGNORECASE)
 _DATE_RE = re.compile(r"\b(\d{2})\.(\d{2})\.(\d{4})\b")
 
 
-class UnknownCity(ValueError):
+class UnknownCityError(ValueError):
     """Profile city has no WG-Gesucht city_id mapped."""
 
 
@@ -99,7 +100,7 @@ class WGGesuchtScraper:
     def fetch_new(self, profile: Profile) -> Iterable[Flat]:
         city_id = CITY_IDS.get(profile.city)
         if city_id is None:
-            raise UnknownCity(
+            raise UnknownCityError(
                 f"{self.platform}: no city_id for {profile.city!r}; "
                 f"extend CITY_IDS in {__name__}"
             )
@@ -113,17 +114,16 @@ class WGGesuchtScraper:
         )
 
         logger.info("%s: fetching %s", self.platform, url)
-        with polite_session(config) as context:
-            with session_page(context) as pg:
-                response = pg.goto(url, wait_until="domcontentloaded")
-                if response is None:
-                    logger.warning("%s: null response from %s", self.platform, url)
-                    return
-                check_rate_limit(response.status, self.platform)
-                if response.status >= 400:
-                    logger.warning("%s: search returned HTTP %d", self.platform, response.status)
-                    return
-                html = pg.content()
+        with polite_session(config) as context, session_page(context) as pg:
+            response = pg.goto(url, wait_until="domcontentloaded")
+            if response is None:
+                logger.warning("%s: null response from %s", self.platform, url)
+                return
+            check_rate_limit(response.status, self.platform)
+            if response.status >= 400:
+                logger.warning("%s: search returned HTTP %d", self.platform, response.status)
+                return
+            html = pg.content()
 
         flats = list(self._parse_listings(html))
         logger.info("%s: parsed %d listings from %s", self.platform, len(flats), profile.city)

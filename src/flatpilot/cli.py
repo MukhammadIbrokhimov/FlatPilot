@@ -9,10 +9,10 @@ behaviour in without renaming commands.
 from __future__ import annotations
 
 import logging
+from datetime import UTC
 
 import typer
 from rich import print as rprint
-
 
 app = typer.Typer(
     name="flatpilot",
@@ -77,10 +77,10 @@ def scrape(
 
     from rich.console import Console
 
+    import flatpilot.scrapers.wg_gesucht  # noqa: F401 — triggers @register
     from flatpilot.database import init_db
     from flatpilot.profile import load_profile
     from flatpilot.scrapers import all_scrapers, get_scraper
-    import flatpilot.scrapers.wg_gesucht  # noqa: F401 — triggers @register
 
     console = Console()
 
@@ -118,18 +118,18 @@ def scrape(
 
 
 def _run_scrape_pass(scrapers: list, profile, console) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from flatpilot.database import get_conn
-    from flatpilot.scrapers.session import RateLimited
+    from flatpilot.scrapers.session import RateLimitedError
 
     conn = get_conn()
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     for scraper in scrapers:
         plat = scraper.platform
         try:
             flats = list(scraper.fetch_new(profile))
-        except RateLimited as exc:
+        except RateLimitedError as exc:
             console.print(f"[yellow]{plat}: {exc} — skipping this pass[/yellow]")
             continue
         except Exception as exc:

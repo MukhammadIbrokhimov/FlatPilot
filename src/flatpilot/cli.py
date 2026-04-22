@@ -55,10 +55,15 @@ def doctor() -> None:
 
 @app.command()
 def run(
-    watch: bool = typer.Option(False, "--watch", help="Keep polling. Defers to G2."),
-    interval: int = typer.Option(120, "--interval", help="Seconds between passes."),
+    watch: bool = typer.Option(False, "--watch", help="Loop until SIGINT / SIGTERM."),
+    interval: int = typer.Option(
+        120, "--interval", help="Seconds between passes when --watch is set (default 120)."
+    ),
 ) -> None:
     """One scrape + match + notify pass (add --watch to loop)."""
+    import signal
+    import time
+
     from rich.console import Console
 
     from flatpilot.database import init_db
@@ -75,8 +80,55 @@ def run(
 
     init_db()
 
-    failures = _run_pipeline_once(profile, console)
-    if failures:
+    if not watch:
+        failures = _run_pipeline_once(profile, console)
+        if failures:
+            raise typer.Exit(1)
+        return
+
+    stop = False
+
+    def _handler(signum, _frame) -> None:
+        nonlocal stop
+        stop = True
+        console.print(
+            f"\n[yellow]received {signal.Signals(signum).name} — "
+            f"finishing current pass, then exiting…[/yellow]"
+        )
+
+    prev_int = signal.signal(signal.SIGINT, _handler)
+    prev_term = signal.signal(signal.SIGTERM, _handler)
+
+    pass_num = 0
+    total_failures = 0
+    try:
+        while not stop:
+            pass_num += 1
+            console.rule(f"[bold]pass {pass_num}[/bold]")
+            try:
+                total_failures += _run_pipeline_once(profile, console)
+            except Exception as exc:
+                console.print(f"[red]pass {pass_num} aborted: {exc}[/red]")
+                total_failures += 1
+            if stop:
+                break
+            console.print(
+                f"[dim]sleeping {interval}s before next pass "
+                f"(Ctrl-C / SIGTERM to stop)…[/dim]"
+            )
+            for _ in range(interval):
+                if stop:
+                    break
+                time.sleep(1)
+    finally:
+        signal.signal(signal.SIGINT, prev_int)
+        signal.signal(signal.SIGTERM, prev_term)
+
+    console.print(
+        f"[bold]stopped[/bold] · {pass_num} pass(es) · "
+        f"{total_failures} stage failure(s)"
+    )
+    if total_failures:
         raise typer.Exit(1)
 
 

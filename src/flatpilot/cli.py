@@ -188,7 +188,16 @@ def status() -> None:
 @app.command()
 def dashboard() -> None:
     """Build the HTML dashboard of matches."""
-    _placeholder("dashboard")
+    import webbrowser
+
+    from rich.console import Console
+
+    from flatpilot.view import generate
+
+    console = Console()
+    path = generate()
+    console.print(f"Dashboard written to [bold]{path}[/bold]")
+    webbrowser.open(path.as_uri())
 
 
 if __name__ == "__main__":

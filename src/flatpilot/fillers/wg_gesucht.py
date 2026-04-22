@@ -2,20 +2,27 @@
 
 Navigates to a listing URL using the same polite Playwright session that
 the scraper uses (so cookies, consent banner and fingerprint are
-shared), opens the listing's contact form, fills the message body and
+shared), follows the listing's "Nachricht senden" link to the
+``/nachricht-senden/<slug>`` contact page, fills the message body and
 attaches files, then stops short of clicking submit. The actual submit
 path will land with FlatPilot-cjtz (L4 apply command).
 
-Selectors below are **provisional** — chosen from documented WG-Gesucht
-form names but not yet validated against the live form. First real
-dry-run that fails on a :class:`SelectorMissingError` is the signal to
-update them. FlatPilot-fze tracks the empirical verification and
-blocks L4.
+Selectors were verified empirically in FlatPilot-fze against the live
+"messenger" form WG-Gesucht ships today (2026-04-22): both a
+long-term Friedrichshain apartment and a short-term Treptow rental
+render the same ``form#messenger_form`` with a single
+``textarea#message_input`` (``name="content"``) and a hidden
+``input#file_input``. The current form has no subject field; if
+WG-Gesucht adds one back, thread a subject param through
+:meth:`fill_dry_run` at that point.
 
-Why click-to-navigate over guessing a contact-form URL: WG-Gesucht has
-shipped multiple URL schemas for contact (``/nachricht-senden.<id>``,
-``?ask=true`` query, in-page modal). Following the visible CTA lets
-the filler survive schema changes the same way a human would.
+Why extract-href-and-goto over clicking the CTA: WG-Gesucht renders
+three responsive copies of the "Nachricht senden" anchor (xs / sm / md
+breakpoints) and only one is visible at any viewport size. Clicking
+``.first`` in a headless session hits a hidden copy and times out.
+Reading the ``href`` from any of the copies is equivalent and
+deterministic — and still survives URL-schema changes, because the
+href is whatever URL scheme WG-Gesucht ships today.
 """
 
 from __future__ import annotations
@@ -48,33 +55,22 @@ logger = logging.getLogger(__name__)
 
 
 # Comma-separated CSS selectors are tried in order via ``locator(...).first``;
-# the first match wins. Provisional — see module docstring.
+# the first match wins. Verified against the live form in FlatPilot-fze.
 @dataclass(frozen=True)
 class _Selectors:
-    contact_cta: str = (
-        "a:has-text('Nachricht senden'), "
-        "button:has-text('Nachricht senden'), "
-        "a:has-text('Nachricht schreiben'), "
-        "button:has-text('Anfrage senden')"
-    )
-    form: str = (
-        "form#contact_form, "
-        "form[name='nachricht_form'], "
-        "form#nachrichten-formular, "
-        "form[action*='nachricht']"
-    )
-    subject_input: str = (
-        "input[name='subject'], "
-        "input#subject, "
-        "input[name='betreff']"
-    )
+    # The listing page renders three responsive copies of this anchor
+    # (xs / sm / md breakpoints); we read the ``href`` off the first
+    # match rather than clicking, to avoid visibility flakes.
+    contact_cta: str = "a:has-text('Nachricht senden')"
+    form: str = "form#messenger_form"
     message_input: str = (
-        "textarea[name='message'], "
-        "textarea#message, "
-        "textarea[name='nachricht'], "
-        "textarea#nachricht"
+        "textarea#message_input, "
+        "textarea[name='content']"
     )
-    file_input: str = "input[type='file']"
+    file_input: str = (
+        "input#file_input, "
+        "input[type='file']"
+    )
 
 
 SELECTORS = _Selectors()
@@ -88,7 +84,6 @@ LOGIN_URL_FRAGMENTS: tuple[str, ...] = (
     "/sign-in",
 )
 
-DEFAULT_SUBJECT = "Anfrage zur Wohnung"
 FORM_WAIT_MS = 5_000
 FIELD_WAIT_MS = 3_000
 
@@ -104,8 +99,6 @@ class WGGesuchtFiller:
         message: str,
         attachments: list[Path],
         screenshot_dir: Path | None = None,
-        *,
-        subject: str | None = None,
     ) -> FillReport:
         if not message.strip():
             raise ValueError("message must be non-empty")
@@ -136,9 +129,6 @@ class WGGesuchtFiller:
             contact_url = pg.url
 
             fields_filled: dict[str, str] = {}
-            resolved_subject = subject or DEFAULT_SUBJECT
-            if self._fill_optional(pg, SELECTORS.subject_input, resolved_subject):
-                fields_filled["subject"] = resolved_subject
 
             self._fill_required(pg, SELECTORS.message_input, message, label="message")
             fields_filled["message"] = message
@@ -178,28 +168,39 @@ class WGGesuchtFiller:
             )
 
     def _reveal_contact_form(self, pg: Any) -> None:
-        # Some listings render the form inline for logged-in users; others
-        # require clicking a CTA that opens a modal or navigates. Prefer the
-        # already-rendered form, fall back to clicking the CTA.
+        # The messenger form never renders inline on the listing page —
+        # it lives at /nachricht-senden/<slug>, linked from a
+        # "Nachricht senden" anchor. We read that href off the first
+        # matching anchor (there are three responsive copies) and
+        # navigate, rather than clicking, so visibility at any
+        # particular headless viewport size cannot flake the flow.
         if pg.locator(SELECTORS.form).first.count() > 0:
             return
 
         cta = pg.locator(SELECTORS.contact_cta).first
         if cta.count() == 0:
             raise FormNotFoundError(
-                f"{self.platform}: no contact form on page and no CTA matching "
+                f"{self.platform}: no contact CTA matching "
                 f"{SELECTORS.contact_cta!r} at {pg.url}"
             )
-        cta.click()
+        href = cta.get_attribute("href")
+        if not href:
+            raise FormNotFoundError(
+                f"{self.platform}: contact CTA at {pg.url} has no href"
+            )
+        target = href if href.startswith("http") else f"{HOST}{href}"
+        pg.goto(target, wait_until="domcontentloaded")
+
+        self._guard_login(pg)
+
         try:
             pg.locator(SELECTORS.form).first.wait_for(
                 state="visible", timeout=FORM_WAIT_MS
             )
         except Exception as exc:
-            self._guard_login(pg)
             raise FormNotFoundError(
-                f"{self.platform}: clicked contact CTA but form selector "
-                f"{SELECTORS.form!r} never became visible at {pg.url}"
+                f"{self.platform}: navigated to {pg.url} but form selector "
+                f"{SELECTORS.form!r} never became visible"
             ) from exc
 
     def _fill_required(self, pg: Any, selector: str, value: str, *, label: str) -> None:
@@ -211,13 +212,6 @@ class WGGesuchtFiller:
                 f"{self.platform}: {label} field {selector!r} not visible at {pg.url}"
             ) from exc
         target.fill(value)
-
-    def _fill_optional(self, pg: Any, selector: str, value: str) -> bool:
-        target = pg.locator(selector).first
-        if target.count() == 0:
-            return False
-        target.fill(value)
-        return True
 
     def _maybe_screenshot(
         self,

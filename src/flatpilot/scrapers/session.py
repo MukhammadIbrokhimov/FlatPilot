@@ -71,6 +71,15 @@ class SessionConfig:
     timezone_id: str = "Europe/Berlin"
     headless: bool = True
     viewport: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_VIEWPORT))
+    # Set for headed interactive flows (e.g. `flatpilot login`) so the
+    # window is free to match the physical screen and the user can
+    # resize / scroll. Scrape paths keep the pinned viewport because the
+    # D0 probe validated that fingerprint.
+    no_viewport: bool = False
+    # Extra flags forwarded to chromium.launch(args=…). Interactive
+    # flows typically want "--start-maximized" so modals like the
+    # consent banner are fully reachable on small laptop screens.
+    launch_args: tuple[str, ...] = ()
     warmup_url: str | None = None
     consent_selectors: tuple[str, ...] = ()
     nav_timeout_ms: int = DEFAULT_NAV_TIMEOUT_MS
@@ -100,15 +109,22 @@ def polite_session(config: SessionConfig) -> Iterator[Any]:
     storage = str(state_path) if state_path.exists() else None
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=config.headless)
+        browser = pw.chromium.launch(
+            headless=config.headless,
+            args=list(config.launch_args),
+        )
         try:
-            context = browser.new_context(
-                user_agent=config.user_agent,
-                locale=config.locale,
-                timezone_id=config.timezone_id,
-                viewport=config.viewport,
-                storage_state=storage,
-            )
+            context_kwargs: dict[str, Any] = {
+                "user_agent": config.user_agent,
+                "locale": config.locale,
+                "timezone_id": config.timezone_id,
+                "storage_state": storage,
+            }
+            if config.no_viewport:
+                context_kwargs["no_viewport"] = True
+            else:
+                context_kwargs["viewport"] = config.viewport
+            context = browser.new_context(**context_kwargs)
             try:
                 if config.warmup_url:
                     _warm_up(context, config)

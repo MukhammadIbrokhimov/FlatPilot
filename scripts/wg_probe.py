@@ -68,6 +68,24 @@ HOMEPAGE_URL = "https://www.wg-gesucht.de/"
 NAV_TIMEOUT_MS = 30_000
 WARM_UP_SETTLE_SEC = 2
 
+# WG-Gesucht search URLs require the internal numeric city ID:
+#   /wohnungen-in-<CitySlug>.<city_id>.2.1.0.html
+# (2 = Wohnung / full flat · 1 = zu vermieten / for rent · 0 = first page)
+# A name-only URL 404s. Extend this map when adding support for more cities.
+CITY_IDS: dict[str, int] = {
+    "Berlin": 8,
+    "Hamburg": 55,
+    "München": 90,
+    "Munich": 90,
+    "Köln": 73,
+    "Cologne": 73,
+    "Frankfurt am Main": 41,
+    "Frankfurt": 41,
+    "Stuttgart": 124,
+    "Düsseldorf": 30,
+    "Leipzig": 77,
+}
+
 COOKIE_ACCEPT_SELECTORS = (
     "button:has-text('Einverstanden')",
     "button:has-text('Zustimmen')",
@@ -77,10 +95,10 @@ COOKIE_ACCEPT_SELECTORS = (
     "#cmpbntyestxt",
 )
 RESULT_SELECTORS = (
-    "div.offer_list_item",
-    "article.offer",
-    ".wgg_card",
-    "[data-id][data-listing-type]",
+    # WG-Gesucht renders each listing as <div class="wgg_card offer_list_item">.
+    ".wgg_card.offer_list_item",
+    # Defensive fallback in case the markup shifts.
+    ".offer_list_item",
 )
 BLOCK_KEYWORDS = (
     "unusual traffic",
@@ -107,8 +125,16 @@ LOG_FILE = LOGS_DIR / "wg_probe.log"
 
 
 def search_url(city: str) -> str:
-    slug = quote(city.strip().replace(" ", "-"))
-    return f"https://www.wg-gesucht.de/wohnungen-in-{slug}.html"
+    name = city.strip()
+    if name not in CITY_IDS:
+        known = ", ".join(sorted(CITY_IDS))
+        raise KeyError(
+            f"No WG-Gesucht city_id known for {name!r}. "
+            f"Extend CITY_IDS in scripts/wg_probe.py. Known: {known}"
+        )
+    city_id = CITY_IDS[name]
+    slug = quote(name.replace(" ", "-"))
+    return f"https://www.wg-gesucht.de/wohnungen-in-{slug}.{city_id}.2.1.0.html"
 
 
 def _configure_logger() -> logging.Logger:
@@ -140,8 +166,12 @@ def _accept_cookie_banner(page, logger: logging.Logger) -> None:
 
 
 def _classify(page) -> str:
+    # Active hCaptcha / reCAPTCHA challenge → iframe with the provider in its
+    # `src`. WG-Gesucht preloads the hCaptcha JS library on every page even
+    # when no challenge is shown, so a plain body-text match for "hcaptcha"
+    # would false-positive. The iframe check is the reliable signal.
     try:
-        if page.locator("iframe[src*='hcaptcha']").count() > 0:
+        if page.locator("iframe[src*='hcaptcha.com']").count() > 0:
             return "captcha"
         if page.locator("iframe[src*='recaptcha']").count() > 0:
             return "captcha"
@@ -149,8 +179,6 @@ def _classify(page) -> str:
     except Exception as exc:
         return f"error_{type(exc).__name__}"
 
-    if "hcaptcha" in body or "g-recaptcha" in body:
-        return "captcha"
     if any(kw in body for kw in BLOCK_KEYWORDS):
         return "block_keyword"
     for selector in RESULT_SELECTORS:

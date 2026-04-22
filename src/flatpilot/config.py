@@ -31,6 +31,10 @@ ENV_PATH: Path = APP_DIR / ".env"
 # command looks up which of them to attach for a given platform from
 # profile.attachments.
 ATTACHMENTS_DIR: Path = APP_DIR / "attachments"
+# One Markdown Anschreiben per rental platform, named ``<platform>.md``.
+# The L2 composer (flatpilot.compose) reads from here; L4 apply wires
+# it into the outgoing contact form.
+TEMPLATES_DIR: Path = APP_DIR / "templates"
 
 
 def ensure_dirs() -> None:
@@ -38,6 +42,7 @@ def ensure_dirs() -> None:
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def load_env() -> None:

@@ -13,12 +13,11 @@ from __future__ import annotations
 from datetime import date
 from importlib import resources
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from flatpilot.config import PROFILE_PATH
-
 
 WBSStatus = Literal["none", "yes"]
 IncomeCategory = Literal[100, 140, 160, 180]
@@ -32,9 +31,9 @@ class WBS(BaseModel):
     status: WBSStatus = "none"
     # Household-size category. WBS in Germany runs 1–5, where 5 covers any
     # household of 5 or more people.
-    size_category: Optional[int] = Field(default=None, ge=1, le=5)
+    size_category: int | None = Field(default=None, ge=1, le=5)
     # Income band — Berlin's 100/140/160/180 multipliers of the baseline limit.
-    income_category: Optional[IncomeCategory] = None
+    income_category: IncomeCategory | None = None
 
 
 class TelegramNotification(BaseModel):
@@ -68,8 +67,8 @@ class Profile(BaseModel):
     city: str
     radius_km: int = Field(ge=0, le=500)
     district_allowlist: list[str] = Field(default_factory=list)
-    home_lat: Optional[float] = Field(default=None, ge=-90.0, le=90.0)
-    home_lng: Optional[float] = Field(default=None, ge=-180.0, le=180.0)
+    home_lat: float | None = Field(default=None, ge=-90.0, le=90.0)
+    home_lng: float | None = Field(default=None, ge=-180.0, le=180.0)
 
     rent_min_warm: int = Field(ge=0)
     rent_max_warm: int = Field(ge=0)
@@ -87,13 +86,13 @@ class Profile(BaseModel):
 
     smoker: bool = False
     furnished_pref: FurnishedPref = "any"
-    min_contract_months: Optional[int] = Field(default=None, ge=0)
+    min_contract_months: int | None = Field(default=None, ge=0)
 
     wbs: WBS = Field(default_factory=WBS)
     notifications: Notifications = Field(default_factory=Notifications)
 
     @model_validator(mode="after")
-    def _ranges_are_ordered(self) -> "Profile":
+    def _ranges_are_ordered(self) -> Profile:
         if self.rent_max_warm < self.rent_min_warm:
             raise ValueError("rent_max_warm must be >= rent_min_warm")
         if self.rooms_max < self.rooms_min:
@@ -101,7 +100,7 @@ class Profile(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _wbs_fields_required_when_yes(self) -> "Profile":
+    def _wbs_fields_required_when_yes(self) -> Profile:
         if self.wbs.status == "yes":
             missing = [
                 name
@@ -122,7 +121,7 @@ class Profile(BaseModel):
         return Path(str(resources.files("flatpilot") / "profile.example.json"))
 
     @classmethod
-    def load_example(cls) -> "Profile":
+    def load_example(cls) -> Profile:
         return cls.model_validate_json(cls.example_path().read_text())
 
 
@@ -137,3 +136,17 @@ def save_profile(profile: Profile, path: Path | None = None) -> None:
     p = path or PROFILE_PATH
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(profile.model_dump_json(indent=2))
+
+
+def profile_hash(profile: Profile) -> str:
+    """Stable 16-char SHA-256 prefix of the profile's JSON serialization.
+
+    Any substantive profile change (rent band, rooms, WBS, districts, …)
+    produces a new hash. Used by the matcher to key match rows so a
+    profile change causes re-evaluation, and by the dispatcher to scope
+    pending notifications to the current profile — otherwise matches
+    computed under an older profile would still fire on the next pass.
+    """
+    import hashlib
+
+    return hashlib.sha256(profile.model_dump_json().encode("utf-8")).hexdigest()[:16]

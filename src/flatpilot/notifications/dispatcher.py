@@ -17,15 +17,14 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, TypedDict
 
 from flatpilot.database import get_conn, init_db
 from flatpilot.notifications import email as email_adapter
 from flatpilot.notifications import telegram as telegram_adapter
 from flatpilot.notifications import template
-from flatpilot.profile import Profile
-
+from flatpilot.profile import Profile, profile_hash
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +89,32 @@ def _send(channel: str, flat: dict[str, Any], profile: Profile) -> None:
         raise ValueError(f"unknown channel: {channel!r}")
 
 
+def _mark_stale_matches_notified(conn, current_hash: str) -> None:
+    """Suppress pending matches whose profile hash is no longer current.
+
+    Stamps notified_at (without touching notified_channels_json) so these
+    rows stay in the DB as historical data but never fire dispatches
+    again. Idempotent — a second call is a no-op because the WHERE clause
+    excludes rows with a non-null notified_at.
+    """
+    now = datetime.now(UTC).isoformat()
+    cursor = conn.execute(
+        """
+        UPDATE matches
+           SET notified_at = ?
+         WHERE decision = 'match'
+           AND notified_at IS NULL
+           AND profile_version_hash != ?
+        """,
+        (now, current_hash),
+    )
+    if cursor.rowcount:
+        logger.info(
+            "dispatch: suppressed %d pending match(es) from stale profile hash(es)",
+            cursor.rowcount,
+        )
+
+
 def dispatch_pending(profile: Profile) -> DispatchSummary:
     channels = enabled_channels(profile)
     if not channels:
@@ -98,14 +123,22 @@ def dispatch_pending(profile: Profile) -> DispatchSummary:
 
     init_db()
     conn = get_conn()
+    phash = profile_hash(profile)
+
+    # Scope to matches evaluated under the *current* profile — otherwise
+    # a profile change (e.g. lowering rent_max_warm) would still notify
+    # matches that were valid under the previous profile's rules but
+    # never got a notified_at stamp. See FlatPilot-usm for the scenario.
+    _mark_stale_matches_notified(conn, phash)
 
     rows = conn.execute(
         """
         SELECT m.id AS match_id, m.notified_channels_json, f.*
         FROM matches m
         JOIN flats f ON f.id = m.flat_id
-        WHERE m.decision = 'match'
-        """
+        WHERE m.decision = 'match' AND m.profile_version_hash = ?
+        """,
+        (phash,),
     ).fetchall()
 
     sent: dict[str, int] = {}
@@ -132,7 +165,7 @@ def dispatch_pending(profile: Profile) -> DispatchSummary:
             sent[channel] = sent.get(channel, 0) + 1
 
         if notified:
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(UTC).isoformat()
             conn.execute(
                 "UPDATE matches SET notified_channels_json = ?, notified_at = ? WHERE id = ?",
                 (json.dumps(sorted(notified)), now, match_id),

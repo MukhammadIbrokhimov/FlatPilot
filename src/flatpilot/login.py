@@ -70,6 +70,10 @@ def run_login(platform: str, console: Console) -> Path:
         platform=platform,
         user_agent=DEFAULT_USER_AGENT,
         headless=False,
+        # Headed interactive flow: let Chromium pick a window size that
+        # fits the user's screen rather than pinning 1280×900, so the
+        # login / register page is fully scrollable.
+        no_viewport=True,
         warmup_url=site.warmup_url,
         consent_selectors=site.consent_selectors,
     )

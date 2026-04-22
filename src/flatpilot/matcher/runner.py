@@ -14,16 +14,14 @@ next ``flatpilot match``.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TypedDict
 
 from flatpilot.database import get_conn, init_db
 from flatpilot.matcher.filters import evaluate
-from flatpilot.profile import Profile, load_profile
-
+from flatpilot.profile import load_profile, profile_hash
 
 logger = logging.getLogger(__name__)
 
@@ -35,26 +33,21 @@ class MatchSummary(TypedDict):
     profile_hash: str
 
 
-class ProfileMissing(RuntimeError):
+class ProfileMissingError(RuntimeError):
     """Raised when ``flatpilot match`` runs before ``flatpilot init``."""
-
-
-def _profile_hash(profile: Profile) -> str:
-    payload = profile.model_dump_json()
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def run_match() -> MatchSummary:
     profile = load_profile()
     if profile is None:
-        raise ProfileMissing(
+        raise ProfileMissingError(
             "No profile at ~/.flatpilot/profile.json — run `flatpilot init` first."
         )
 
     init_db()
     conn = get_conn()
-    profile_hash = _profile_hash(profile)
-    now = datetime.now(timezone.utc).isoformat()
+    phash = profile_hash(profile)
+    now = datetime.now(UTC).isoformat()
 
     rows = conn.execute(
         """
@@ -64,7 +57,7 @@ def run_match() -> MatchSummary:
             ON m.flat_id = f.id AND m.profile_version_hash = ?
         WHERE m.id IS NULL
         """,
-        (profile_hash,),
+        (phash,),
     ).fetchall()
 
     counts = {"match": 0, "reject": 0}
@@ -78,14 +71,14 @@ def run_match() -> MatchSummary:
                 (flat_id, profile_version_hash, decision, decision_reasons_json, decided_at)
             VALUES (?, ?, ?, ?, ?)
             """,
-            (flat["id"], profile_hash, decision, json.dumps(reasons), now),
+            (flat["id"], phash, decision, json.dumps(reasons), now),
         )
         counts[decision] += 1
 
     logger.info(
         "matcher: processed %d flats under profile %s — %d match, %d reject",
         len(rows),
-        profile_hash,
+        phash,
         counts["match"],
         counts["reject"],
     )
@@ -93,5 +86,5 @@ def run_match() -> MatchSummary:
         "processed": len(rows),
         "match": counts["match"],
         "reject": counts["reject"],
-        "profile_hash": profile_hash,
+        "profile_hash": phash,
     }

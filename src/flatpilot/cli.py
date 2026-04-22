@@ -316,12 +316,12 @@ def match() -> None:
     """Apply the matcher to unmatched listings and write matches."""
     from rich.console import Console
 
-    from flatpilot.matcher.runner import ProfileMissing, run_match
+    from flatpilot.matcher.runner import ProfileMissingError, run_match
 
     console = Console()
     try:
         summary = run_match()
-    except ProfileMissing as exc:
+    except ProfileMissingError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
 

@@ -20,7 +20,8 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import ClassVar, Protocol, TypedDict
 
-from flatpilot.config import SESSIONS_DIR, ensure_dirs
+from flatpilot import config
+from flatpilot.config import ensure_dirs
 from flatpilot.profile import Profile
 
 
@@ -66,8 +67,15 @@ class Scraper(Protocol):
 
 
 def session_dir(platform: str) -> Path:
-    """Return (and create) the cookie / state dir for a given platform."""
+    """Return (and create) the cookie / state dir for a given platform.
+
+    Reads ``config.SESSIONS_DIR`` at call time (not import time) so that
+    ``tests/conftest.py::tmp_db`` — which monkey-patches
+    ``flatpilot.config.SESSIONS_DIR`` — actually isolates writes to the
+    tmp path. A module-level ``from flatpilot.config import SESSIONS_DIR``
+    would be stale by the time the test runs.
+    """
     ensure_dirs()
-    path = SESSIONS_DIR / platform
+    path = config.SESSIONS_DIR / platform
     path.mkdir(parents=True, exist_ok=True)
     return path

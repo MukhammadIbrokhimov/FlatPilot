@@ -25,13 +25,45 @@ Files stay small on purpose: `dedup.py` is the matcher-adjacent logic; the CLI e
 
 ---
 
+## Task 0: Branch setup
+
+Skip this task if you are resuming work on an existing `feat/i-bis-1-dedup` branch (the spec and this plan were already committed there).
+
+- [ ] **Step 1: Confirm you're on the feature branch**
+
+Run: `git rev-parse --abbrev-ref HEAD`
+
+Expected: `feat/i-bis-1-dedup`.
+
+If not, create it:
+
+```bash
+git fetch origin
+git checkout -b feat/i-bis-1-dedup origin/main
+```
+
+CLAUDE.md forbids committing to `main` directly — do not skip this check. The next task's first commit must land on the feature branch.
+
+- [ ] **Step 2: Confirm commit author**
+
+Run: `git config user.email`
+
+Expected: `ibrohimovmuhammad2020@gmail.com`. If not, set it locally:
+
+```bash
+git config user.email ibrohimovmuhammad2020@gmail.com
+git config user.name "Mukhammad Ibrokhimov"
+```
+
+---
+
 ## Task 1: Pytest fixture for an isolated SQLite DB
 
 **Files:**
 - Create: `tests/conftest.py`
 - Test: `tests/test_conftest_smoke.py`
 
-The fixture must point `DB_PATH` at a temp file *before* `init_db` runs and clear the thread-local connection cache between tests. Without this, tests would silently read/write `~/.flatpilot/flatpilot.db`.
+The fixture must (a) redirect every path derived from `APP_DIR` so `ensure_dirs()` doesn't mkdir under the real `~/.flatpilot`, and (b) clear the thread-local connection cache between tests. Without this, tests would silently create state in the user's home directory — a CLAUDE.md violation.
 
 - [ ] **Step 1: Create the shared fixture**
 
@@ -41,10 +73,10 @@ Write `tests/conftest.py`:
 """Shared pytest fixtures for FlatPilot tests.
 
 The project stores user state under ``~/.flatpilot`` in production; tests
-must never touch that directory. ``tmp_db`` redirects ``DB_PATH`` in
-both ``flatpilot.config`` and ``flatpilot.database`` (each holds its own
-reference) and clears the thread-local connection cache so each test
-starts from a clean, isolated database.
+must never touch that directory. ``tmp_db`` redirects every path
+computed off ``APP_DIR`` so ``ensure_dirs()`` creates directories under
+``tmp_path`` instead, and clears the thread-local connection cache so
+each test starts from a clean, isolated database.
 """
 
 from __future__ import annotations
@@ -58,9 +90,18 @@ import pytest
 def tmp_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from flatpilot import config, database
 
-    db_path = tmp_path / "flatpilot.db"
+    app_dir = tmp_path / ".flatpilot"
+    db_path = app_dir / "flatpilot.db"
 
+    # ensure_dirs() references these module-level names directly, so we
+    # have to patch each one the function touches. DB_PATH is also held
+    # inside flatpilot.database (imported by name), so patch it there too.
+    monkeypatch.setattr(config, "APP_DIR", app_dir)
     monkeypatch.setattr(config, "DB_PATH", db_path)
+    monkeypatch.setattr(config, "SESSIONS_DIR", app_dir / "sessions")
+    monkeypatch.setattr(config, "LOG_DIR", app_dir / "logs")
+    monkeypatch.setattr(config, "ATTACHMENTS_DIR", app_dir / "attachments")
+    monkeypatch.setattr(config, "TEMPLATES_DIR", app_dir / "templates")
     monkeypatch.setattr(database, "DB_PATH", db_path)
 
     database.close_conn()
@@ -81,6 +122,8 @@ Write `tests/test_conftest_smoke.py`:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 
 def test_tmp_db_has_flats_table(tmp_db):
     row = tmp_db.execute(
@@ -99,13 +142,22 @@ def test_tmp_db_is_fresh_per_test_a(tmp_db):
 
 def test_tmp_db_is_fresh_per_test_b(tmp_db):
     assert tmp_db.execute("SELECT COUNT(*) FROM flats").fetchone()[0] == 0
+
+
+def test_tmp_db_does_not_touch_real_flatpilot_dir(tmp_db, tmp_path):
+    """Paranoia check: the fixture must point APP_DIR inside tmp_path."""
+    from flatpilot import config
+
+    assert config.APP_DIR != Path.home() / ".flatpilot"
+    assert tmp_path in config.APP_DIR.parents or config.APP_DIR == tmp_path / ".flatpilot"
+    assert config.DB_PATH.exists()
 ```
 
 - [ ] **Step 3: Run the smoke tests**
 
 Run: `pytest tests/test_conftest_smoke.py -v`
 
-Expected: 3 passed. If test_b fails with `COUNT = 1`, the fixture isn't actually isolating between tests and must be fixed before continuing.
+Expected: 4 passed. If `test_tmp_db_is_fresh_per_test_b` fails with `COUNT = 1`, the fixture isn't actually isolating between tests. If `test_tmp_db_does_not_touch_real_flatpilot_dir` fails, `APP_DIR` is still pointing at the real home directory — re-check the monkeypatch calls.
 
 - [ ] **Step 4: Commit**
 
@@ -455,7 +507,14 @@ def find_canonical(conn: sqlite3.Connection, flat: dict) -> int | None:
 
     for row in rows:
         if normalize_address(row["address"]) == normalized:
-            return row["canonical_flat_id"] or row["id"]
+            # Explicit None check — ``canonical_flat_id or row["id"]``
+            # would misroute if a row ever had id=0. SQLite AUTOINCREMENT
+            # starts at 1, but the explicit form documents the intent.
+            return (
+                row["canonical_flat_id"]
+                if row["canonical_flat_id"] is not None
+                else row["id"]
+            )
     return None
 ```
 
@@ -951,7 +1010,7 @@ Expected: `All checks passed!`.
 
 Run: `git log --oneline origin/main..HEAD`
 
-Expected: the spec commit, the spec-review amendment commit, and one commit per task above (Tasks 1–7). Every commit message starts with `FlatPilot-0ktm:`.
+Expected: the spec commit, the spec-review amendment commit, the plan commit, and one commit per task above (Tasks 1–7). Every commit message starts with `FlatPilot-0ktm:`. No AI co-author trailers (`git log -p origin/main..HEAD | grep -iE 'co-authored-by|claude'` should be empty — CLAUDE.md rule).
 
 - [ ] **Step 4: Push the branch**
 
@@ -980,7 +1039,11 @@ Out of scope (FlatPilot-k40y): changing `matcher/runner.py` or `notifications/di
 
 - [x] `pytest` — full suite green
 - [x] `ruff check` — clean
-- [ ] Manual smoke: `flatpilot dedup --rebuild` on a real `~/.flatpilot/flatpilot.db` with live WG-Gesucht data
+
+## Follow-ups (after merge)
+
+- Manual smoke: run `flatpilot dedup --rebuild` on the real `~/.flatpilot/flatpilot.db` and verify cluster count looks sensible.
+- FlatPilot-k40y — change matcher + notifier to key off `canonical_flat_id`.
 EOF
 )"
 ```

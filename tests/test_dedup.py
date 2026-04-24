@@ -14,6 +14,32 @@ from flatpilot.matcher.dedup import (
 )
 
 
+def _minimal_profile(*, telegram_enabled: bool = False):
+    """Return a Profile that accepts any reasonably-priced 1+ room flat.
+
+    Home coords are left unset so the distance filter is skipped — keeps
+    these tests from needing a Nominatim mock.
+    """
+    from flatpilot.profile import Profile
+
+    return Profile.model_validate(
+        {
+            "city": "Berlin",
+            "radius_km": 50,
+            "rent_min_warm": 0,
+            "rent_max_warm": 2000,
+            "rooms_min": 1,
+            "rooms_max": 10,
+            "household_size": 1,
+            "kids": 0,
+            "status": "student",
+            "net_income_eur": 1500,
+            "move_in_date": "2026-01-01",
+            "notifications": {"telegram": {"enabled": telegram_enabled}},
+        }
+    )
+
+
 def _insert(conn, **overrides) -> int:
     """Insert a minimal flat row and return its id. Tests override fields."""
     now = datetime.now(UTC).isoformat()
@@ -404,3 +430,50 @@ def test_deleted_canonical_leaves_survivor_self_canonical(tmp_db):
         "SELECT canonical_flat_id FROM flats WHERE id = ?", (c,)
     ).fetchone()
     assert row_c["canonical_flat_id"] == b
+
+
+def test_matcher_writes_one_match_per_canonical(tmp_db, monkeypatch):
+    """Twin flats on two platforms → one match row, keyed on the canonical root."""
+    from flatpilot.cli import _insert_flat
+    from flatpilot.matcher import runner
+
+    profile = _minimal_profile()
+    monkeypatch.setattr(runner, "load_profile", lambda: profile)
+
+    now = datetime.now(UTC).isoformat()
+    _insert_flat(
+        tmp_db,
+        {
+            "external_id": "wg-1",
+            "listing_url": "https://wg-gesucht.de/1",
+            "title": "A",
+            "rent_warm_eur": 800.0,
+            "size_sqm": 50.0,
+            "address": "Greifswalder Str. 42",
+        },
+        "wg_gesucht",
+        now,
+    )
+    _insert_flat(
+        tmp_db,
+        {
+            "external_id": "ka-1",
+            "listing_url": "https://kleinanzeigen.de/1",
+            "title": "B",
+            "rent_warm_eur": 810.0,
+            "size_sqm": 51.0,
+            "address": "10435 Berlin, Greifswalder Straße 42",
+        },
+        "kleinanzeigen",
+        now,
+    )
+
+    summary = runner.run_match()
+
+    assert summary["processed"] == 1  # only the canonical root
+    rows = tmp_db.execute(
+        "SELECT m.flat_id, f.platform "
+        "FROM matches m JOIN flats f ON f.id = m.flat_id"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["platform"] == "wg_gesucht"  # the older, canonical row

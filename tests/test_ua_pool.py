@@ -95,3 +95,27 @@ def test_corrupt_fingerprint_file_falls_back_gracefully(tmp_db) -> None:
     assert ua in POOL
     # Recovered file must be valid JSON now.
     assert json.loads(fp_path.read_text()) == {"user_agent": ua}
+
+
+def test_pin_user_agent_honours_existing_state_jar(tmp_db) -> None:
+    """Upgrade path: a cookie jar may already exist from a pre-UA-pool
+    version. Those cookies were established under DEFAULT_USER_AGENT
+    (Firefox 121 Linux — the D0-validated fingerprint). Pin that same
+    UA so the jar/UA pairing stays stable; picking a fresh random UA
+    against an existing jar is a stronger bot signal than any rotation.
+    """
+    from flatpilot.config import SESSIONS_DIR
+    from flatpilot.scrapers.session import DEFAULT_USER_AGENT
+    from flatpilot.scrapers.ua_pool import pin_user_agent
+
+    sdir = SESSIONS_DIR / "kleinanzeigen"
+    sdir.mkdir(parents=True, exist_ok=True)
+    (sdir / "state.json").write_text('{"cookies": [], "origins": []}')
+
+    ua = pin_user_agent("kleinanzeigen")
+    assert ua == DEFAULT_USER_AGENT
+    # The decision is persisted so subsequent calls return the same UA.
+    assert json.loads((sdir / "fingerprint.json").read_text()) == {
+        "user_agent": DEFAULT_USER_AGENT
+    }
+    assert pin_user_agent("kleinanzeigen") == DEFAULT_USER_AGENT

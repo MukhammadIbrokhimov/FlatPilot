@@ -42,10 +42,22 @@ def pin_user_agent(platform: str) -> str:
     """Return a persistent UA for ``platform``.
 
     First call writes ``~/.flatpilot/sessions/<platform>/fingerprint.json``
-    and returns the picked value. Subsequent calls read it back. If the
+    and returns the pinned value. Subsequent calls read it back. If the
     file is missing or malformed, a new UA is picked and persisted.
+
+    When ``fingerprint.json`` is absent but a sibling ``state.json``
+    cookie jar already exists (upgrade from a pre-UA-pool version), the
+    cookies were established under :data:`flatpilot.scrapers.session.DEFAULT_USER_AGENT`
+    — pin that same UA to avoid presenting the existing jar under a
+    fresh random string, which is a stronger bot signal than staying on
+    one UA.
     """
-    path = session_dir(platform) / "fingerprint.json"
+    # Local import keeps the ua_pool <-> session import graph acyclic
+    # (session imports from base only; we reach into it lazily here).
+    from flatpilot.scrapers.session import DEFAULT_USER_AGENT
+
+    sdir = session_dir(platform)
+    path = sdir / "fingerprint.json"
     if path.exists():
         try:
             payload = json.loads(path.read_text())
@@ -58,7 +70,15 @@ def pin_user_agent(platform: str) -> str:
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("%s: fingerprint.json unreadable (%s); re-pinning", platform, exc)
 
-    ua = random.choice(POOL)
+    if (sdir / "state.json").exists():
+        ua = DEFAULT_USER_AGENT
+        logger.info(
+            "%s: existing cookie jar with no fingerprint.json — "
+            "pinning DEFAULT_USER_AGENT to preserve jar/UA pairing",
+            platform,
+        )
+    else:
+        ua = random.choice(POOL)
+        logger.info("%s: pinned user-agent fingerprint", platform)
     path.write_text(json.dumps({"user_agent": ua}))
-    logger.info("%s: pinned user-agent fingerprint", platform)
     return ua

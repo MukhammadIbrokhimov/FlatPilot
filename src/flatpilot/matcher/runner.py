@@ -49,6 +49,10 @@ def run_match() -> MatchSummary:
     phash = profile_hash(profile)
     now = datetime.now(UTC).isoformat()
 
+    # Only evaluate canonical roots. PR #21 stamps canonical_flat_id on
+    # every scrape insert; duplicates always have a non-NULL link, so
+    # restricting to IS NULL means each cluster gets exactly one match
+    # row (keyed on the oldest row in the cluster).
     rows = conn.execute(
         """
         SELECT f.*
@@ -56,6 +60,7 @@ def run_match() -> MatchSummary:
         LEFT JOIN matches m
             ON m.flat_id = f.id AND m.profile_version_hash = ?
         WHERE m.id IS NULL
+          AND f.canonical_flat_id IS NULL
         """,
         (phash,),
     ).fetchall()

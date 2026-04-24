@@ -246,3 +246,61 @@ def test_assign_canonical_missing_row_noop(tmp_db):
     ).fetchall()
     assert [tuple(r) for r in before] == [tuple(r) for r in after]
     assert before[0]["id"] == a
+
+
+def test_insert_flat_populates_canonical_link(tmp_db):
+    from flatpilot.cli import _insert_flat
+
+    now = datetime.now(UTC).isoformat()
+    _insert_flat(
+        tmp_db,
+        {
+            "external_id": "wg-1",
+            "listing_url": "https://wg-gesucht.de/1",
+            "title": "A",
+            "rent_warm_eur": 800.0,
+            "size_sqm": 50.0,
+            "address": "Greifswalder Str. 42",
+        },
+        "wg_gesucht",
+        now,
+    )
+    _insert_flat(
+        tmp_db,
+        {
+            "external_id": "ka-1",
+            "listing_url": "https://kleinanzeigen.de/1",
+            "title": "B",
+            "rent_warm_eur": 810.0,
+            "size_sqm": 51.0,
+            "address": "10435 Berlin, Greifswalder Straße 42",
+        },
+        "kleinanzeigen",
+        now,
+    )
+    rows = tmp_db.execute(
+        "SELECT id, platform, canonical_flat_id FROM flats ORDER BY id"
+    ).fetchall()
+    assert rows[0]["canonical_flat_id"] is None
+    assert rows[1]["canonical_flat_id"] == rows[0]["id"]
+
+
+def test_insert_flat_without_twin_leaves_link_null(tmp_db):
+    from flatpilot.cli import _insert_flat
+
+    now = datetime.now(UTC).isoformat()
+    _insert_flat(
+        tmp_db,
+        {
+            "external_id": "wg-1",
+            "listing_url": "https://wg-gesucht.de/1",
+            "title": "A",
+            "rent_warm_eur": 800.0,
+            "size_sqm": 50.0,
+            "address": "Greifswalder Str. 42",
+        },
+        "wg_gesucht",
+        now,
+    )
+    row = tmp_db.execute("SELECT canonical_flat_id FROM flats").fetchone()
+    assert row["canonical_flat_id"] is None

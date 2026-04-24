@@ -343,7 +343,12 @@ def _insert_flat(conn, flat, platform: str, now: str) -> bool:
         f"VALUES ({placeholders})"
     )
     cursor = conn.execute(sql, row)
-    return cursor.rowcount > 0
+    if cursor.rowcount == 0:
+        return False
+    from flatpilot.matcher.dedup import assign_canonical
+
+    assign_canonical(conn, cursor.lastrowid)
+    return True
 
 
 @app.command()

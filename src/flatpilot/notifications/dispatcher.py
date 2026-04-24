@@ -133,14 +133,25 @@ def dispatch_pending(profile: Profile) -> DispatchSummary:
 
     rows = conn.execute(
         """
-        SELECT m.id AS match_id, m.notified_channels_json, f.*
+        SELECT m.id AS match_id,
+               m.notified_channels_json,
+               COALESCE(f.canonical_flat_id, f.id) AS canonical_id,
+               f.*
         FROM matches m
         JOIN flats f ON f.id = m.flat_id
         WHERE m.decision = 'match' AND m.profile_version_hash = ?
+        ORDER BY canonical_id, f.id
         """,
         (phash,),
     ).fetchall()
 
+    # Dedup across sibling match rows that reference the same canonical
+    # cluster. Earned by two scenarios the matcher's root-only filter
+    # can't cover: legacy match rows written before PR #21, and any
+    # row churn from a future `dedup --rebuild` that re-clusters already
+    # matched flats. For each (canonical_id, channel), we send at most
+    # once; later siblings inherit the notified stamp without firing.
+    sent_canonicals: dict[int, set[str]] = {}
     sent: dict[str, int] = {}
     failed: dict[str, int] = {}
     processed = 0
@@ -148,8 +159,11 @@ def dispatch_pending(profile: Profile) -> DispatchSummary:
     for row in rows:
         flat = dict(row)
         match_id = flat.pop("match_id")
+        canonical_id = flat.pop("canonical_id")
         notified = _parse_channels(flat.pop("notified_channels_json", None))
-        pending = [c for c in channels if c not in notified]
+        already_for_canonical = sent_canonicals.setdefault(canonical_id, set())
+        effective = notified | already_for_canonical
+        pending = [c for c in channels if c not in effective]
         if not pending:
             continue
 
@@ -162,6 +176,7 @@ def dispatch_pending(profile: Profile) -> DispatchSummary:
                 failed[channel] = failed.get(channel, 0) + 1
                 continue
             notified.add(channel)
+            already_for_canonical.add(channel)
             sent[channel] = sent.get(channel, 0) + 1
 
         if notified:

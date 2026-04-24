@@ -477,3 +477,62 @@ def test_matcher_writes_one_match_per_canonical(tmp_db, monkeypatch):
     ).fetchall()
     assert len(rows) == 1
     assert rows[0]["platform"] == "wg_gesucht"  # the older, canonical row
+
+
+def test_notifier_dedups_by_canonical(tmp_db, monkeypatch):
+    """Two match rows for the same canonical cluster → one dispatch call."""
+    from flatpilot.cli import _insert_flat
+    from flatpilot.notifications import dispatcher
+
+    now = datetime.now(UTC).isoformat()
+    _insert_flat(
+        tmp_db,
+        {
+            "external_id": "wg-1",
+            "listing_url": "https://wg-gesucht.de/1",
+            "title": "A",
+            "rent_warm_eur": 800.0,
+            "size_sqm": 50.0,
+            "address": "Greifswalder Str. 42",
+        },
+        "wg_gesucht",
+        now,
+    )
+    _insert_flat(
+        tmp_db,
+        {
+            "external_id": "ka-1",
+            "listing_url": "https://kleinanzeigen.de/1",
+            "title": "B",
+            "rent_warm_eur": 810.0,
+            "size_sqm": 51.0,
+            "address": "10435 Berlin, Greifswalder Straße 42",
+        },
+        "kleinanzeigen",
+        now,
+    )
+
+    profile = _minimal_profile(telegram_enabled=True)
+    phash = "test-hash"
+
+    # Simulate legacy state: two match rows, one per flat_id, both under the same profile hash.
+    for flat_id in (1, 2):
+        tmp_db.execute(
+            "INSERT INTO matches (flat_id, profile_version_hash, decision, "
+            "decision_reasons_json, decided_at) VALUES (?, ?, 'match', '[]', ?)",
+            (flat_id, phash, now),
+        )
+    monkeypatch.setattr(dispatcher, "profile_hash", lambda _p: phash)
+
+    calls: list[tuple[str, int]] = []
+
+    def fake_send(channel, flat, _profile):
+        calls.append((channel, flat["id"]))
+
+    monkeypatch.setattr(dispatcher, "_send", fake_send)
+
+    summary = dispatcher.dispatch_pending(profile)
+
+    assert summary["sent"] == {"telegram": 1}
+    assert len(calls) == 1
+    assert calls[0] == ("telegram", 1)  # the canonical root wins

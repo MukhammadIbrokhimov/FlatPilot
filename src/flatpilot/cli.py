@@ -352,6 +352,29 @@ def _insert_flat(conn, flat, platform: str, now: str) -> bool:
 
 
 @app.command()
+def dedup(
+    rebuild: bool = typer.Option(
+        False, "--rebuild", help="Recompute canonical_flat_id for every flat."
+    ),
+) -> None:
+    """Populate flats.canonical_flat_id across the database."""
+    from rich.console import Console
+
+    from flatpilot.database import get_conn, init_db
+    from flatpilot.matcher.dedup import rebuild as do_rebuild
+
+    console = Console()
+    if not rebuild:
+        console.print("[yellow]Nothing to do. Pass --rebuild to re-cluster.[/yellow]")
+        raise typer.Exit(code=0)
+
+    init_db()
+    conn = get_conn()
+    total, clusters = do_rebuild(conn)
+    console.print(f"rebuilt [bold]{total}[/bold] flats → [bold]{clusters}[/bold] clusters")
+
+
+@app.command()
 def match() -> None:
     """Apply the matcher to unmatched listings and write matches."""
     from rich.console import Console

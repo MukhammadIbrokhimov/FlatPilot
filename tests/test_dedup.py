@@ -6,7 +6,12 @@ from datetime import UTC, datetime
 
 import pytest
 
-from flatpilot.matcher.dedup import assign_canonical, find_canonical, normalize_address
+from flatpilot.matcher.dedup import (
+    assign_canonical,
+    find_canonical,
+    normalize_address,
+    rebuild,
+)
 
 
 def _insert(conn, **overrides) -> int:
@@ -304,3 +309,59 @@ def test_insert_flat_without_twin_leaves_link_null(tmp_db):
     )
     row = tmp_db.execute("SELECT canonical_flat_id FROM flats").fetchone()
     assert row["canonical_flat_id"] is None
+
+
+def test_rebuild_restores_tampered_link(tmp_db):
+    a = _insert(tmp_db, external_id="a", platform="wg_gesucht")
+    b = _insert(tmp_db, external_id="b", platform="kleinanzeigen")
+    tmp_db.execute("UPDATE flats SET canonical_flat_id = ? WHERE id = ?", (a, b))
+
+    tmp_db.execute("UPDATE flats SET canonical_flat_id = NULL")
+
+    flats, clusters = rebuild(tmp_db)
+    assert (flats, clusters) == (2, 1)
+
+    link = tmp_db.execute(
+        "SELECT canonical_flat_id FROM flats WHERE id = ?", (b,)
+    ).fetchone()["canonical_flat_id"]
+    assert link == a
+
+
+def test_rebuild_is_idempotent(tmp_db):
+    _insert(tmp_db, external_id="a", platform="wg_gesucht")
+    _insert(tmp_db, external_id="b", platform="kleinanzeigen")
+
+    rebuild(tmp_db)
+    snapshot_a = tmp_db.execute(
+        "SELECT id, canonical_flat_id FROM flats ORDER BY id"
+    ).fetchall()
+
+    rebuild(tmp_db)
+    snapshot_b = tmp_db.execute(
+        "SELECT id, canonical_flat_id FROM flats ORDER BY id"
+    ).fetchall()
+
+    assert [tuple(r) for r in snapshot_a] == [tuple(r) for r in snapshot_b]
+
+
+def test_rebuild_re_roots_after_deleted_canonical(tmp_db):
+    """If the canonical row is deleted, rebuild picks the oldest survivor."""
+    a = _insert(tmp_db, external_id="a", platform="wg_gesucht")
+    b = _insert(tmp_db, external_id="b", platform="kleinanzeigen")
+    c = _insert(
+        tmp_db, external_id="c", platform="immoscout", listing_url="u3"
+    )
+
+    rebuild(tmp_db)
+    tmp_db.execute("DELETE FROM flats WHERE id = ?", (a,))
+
+    rebuild(tmp_db)
+    # b is now the oldest survivor; c should link to b.
+    rows = {
+        r["id"]: r["canonical_flat_id"]
+        for r in tmp_db.execute(
+            "SELECT id, canonical_flat_id FROM flats ORDER BY id"
+        ).fetchall()
+    }
+    assert rows[b] is None
+    assert rows[c] == b

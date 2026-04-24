@@ -117,3 +117,21 @@ def assign_canonical(conn: sqlite3.Connection, flat_id: int) -> None:
         "UPDATE flats SET canonical_flat_id = ? WHERE id = ?",
         (canonical, flat_id),
     )
+
+
+def rebuild(conn: sqlite3.Connection) -> tuple[int, int]:
+    """Re-compute ``canonical_flat_id`` across every row in ``flats``.
+
+    Returns ``(total_flats, total_clusters)`` where ``total_clusters`` is
+    the number of distinct canonical rows (each cluster of twins is one
+    cluster; singleton flats each count as their own cluster).
+    """
+    conn.execute("UPDATE flats SET canonical_flat_id = NULL")
+    ids = [r["id"] for r in conn.execute("SELECT id FROM flats ORDER BY id ASC")]
+    for flat_id in ids:
+        assign_canonical(conn, flat_id)
+    total = len(ids)
+    clusters = conn.execute(
+        "SELECT COUNT(*) FROM flats WHERE canonical_flat_id IS NULL"
+    ).fetchone()[0]
+    return total, clusters

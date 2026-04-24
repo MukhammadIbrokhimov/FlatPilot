@@ -577,7 +577,7 @@ def test_three_platform_cluster_produces_one_match_and_one_notification(tmp_db, 
     )
     summary = dispatcher.dispatch_pending(profile_obj)
     assert summary["sent"] == {"telegram": 1}
-    assert len(calls) == 1
+    assert calls == [("telegram", 1)]
 
 
 def test_deleted_canonical_releases_survivor_for_fresh_matching(tmp_db, monkeypatch):

@@ -124,3 +124,14 @@ def test_unknown_failure_kind_raises() -> None:
 
     with pytest.raises(ValueError):
         on_failure("kleinanzeigen", "mystery", now=_t(0))
+
+
+def test_delay_for_rejects_non_positive_consecutive() -> None:
+    """Internal helper guards against an off-by-one that would otherwise
+    index ladder[-1] (the worst-case cap) and look like a giant cool-off."""
+    from flatpilot.scrapers.backoff import _delay_for
+
+    with pytest.raises(ValueError):
+        _delay_for("rate_limit", 0)
+    with pytest.raises(ValueError):
+        _delay_for("challenge", -1)

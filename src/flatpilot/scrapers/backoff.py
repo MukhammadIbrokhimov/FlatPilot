@@ -51,9 +51,13 @@ def _ladder_for(kind: FailureKind) -> tuple[float, ...]:
 
 
 def _delay_for(kind: FailureKind, consecutive: int) -> float:
+    # consecutive=0 would index ladder[-1] (the cap) by accident; guard
+    # explicitly so a misuse surfaces as a ValueError, not a silent
+    # worst-case delay.
+    if consecutive < 1:
+        raise ValueError(f"consecutive must be >= 1, got {consecutive}")
     ladder = _ladder_for(kind)
-    idx = min(consecutive - 1, len(ladder) - 1)
-    return ladder[idx]
+    return ladder[min(consecutive - 1, len(ladder) - 1)]
 
 
 def should_skip(platform: str, *, now: datetime) -> tuple[bool, float]:

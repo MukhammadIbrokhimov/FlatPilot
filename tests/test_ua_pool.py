@@ -16,9 +16,6 @@ UA X at its original cadence. The tests below pin that contract:
 from __future__ import annotations
 
 import json
-from pathlib import Path
-
-import pytest
 
 
 def test_pool_is_non_trivial_and_looks_realistic() -> None:

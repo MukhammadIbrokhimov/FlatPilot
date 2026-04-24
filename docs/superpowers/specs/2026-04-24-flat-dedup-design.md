@@ -58,25 +58,42 @@ profile. This keeps it easy to unit-test with an in-memory DB.
 A pure function. German-rental-listing-specific rules only — no
 general address parsing library. Rules applied in order:
 
-1. Trim and collapse internal whitespace.
-2. Lowercase.
-3. Unify the Straße family: `straße`, `strasse`, `str.` (standalone
-   token or word-final) all collapse to `str`.
-4. Strip `.` and `,`.
-5. Collapse consecutive spaces to one.
+1. Trim and lowercase.
+2. Strip 5-digit postcodes (`10435` etc.) — Kleinanzeigen often
+   prefixes the address with them; WG-Gesucht usually doesn't.
+3. Strip a trailing `, berlin` (or leading `berlin, `). Other cities
+   aren't handled yet — FlatPilot is Berlin-first, and adding more
+   cities can ride along with the scraper that needs them.
+4. Unify the Straße family: `straße`, `strasse`, `str.` → `str`.
+5. Strip `.` and `,`.
+6. Collapse `<digits>` followed by whitespace + single letter
+   (e.g. `42 a`) into `<digits><letter>` (`42a`), so both spellings
+   of the same house-number cluster.
+7. Collapse all consecutive whitespace to a single space.
 
 Returns the normalized string, or `None` if the input was `None` or
 empty after trimming. Unicode is preserved otherwise (umlauts stay).
 
 Examples:
 
-| Raw                               | Normalized               |
-|-----------------------------------|--------------------------|
-| `"Greifswalder Straße 42"`       | `"greifswalder str 42"`  |
-| `"greifswalder strasse 42"`      | `"greifswalder str 42"`  |
-| `"Greifswalder Str. 42"`         | `"greifswalder str 42"`  |
-| `"  Greifswalder  Strasse, 42 "` | `"greifswalder str 42"`  |
-| `None` / `""` / `"   "`          | `None`                   |
+| Raw                                        | Normalized                 |
+|--------------------------------------------|----------------------------|
+| `"Greifswalder Straße 42"`                | `"greifswalder str 42"`    |
+| `"greifswalder strasse 42"`               | `"greifswalder str 42"`    |
+| `"Greifswalder Str. 42"`                  | `"greifswalder str 42"`    |
+| `"  Greifswalder  Strasse, 42 "`          | `"greifswalder str 42"`    |
+| `"10435 Berlin, Greifswalder Str. 42"`    | `"greifswalder str 42"`    |
+| `"Greifswalder Str. 42 a"`                | `"greifswalder str 42a"`   |
+| `"Greifswalder Str. 42A"`                 | `"greifswalder str 42a"`   |
+| `None` / `""` / `"   "`                    | `None`                     |
+
+Deliberately **not** normalized (preserved distinctions):
+
+- `42` vs `42a` — different buildings must not cluster.
+- `42/2` (Austrian-style staircase) — left as-is; we haven't seen it
+  in Berlin listings yet.
+- `ß` → `ss` outside the Straße token (e.g. hypothetical
+  `Schloßstr`) — not worth the regex until we see it in the wild.
 
 ### `find_canonical`
 
@@ -166,22 +183,31 @@ One extra SELECT per new row is cheap — scrape volume is tens per
 run, not thousands. Import is deferred to avoid pulling the matcher
 at module import time.
 
-### `flatpilot dedup` CLI command
+**Transactionality.** `get_conn` sets `isolation_level=None`
+(SQLite autocommit under WAL), so the INSERT commits before
+`assign_canonical` runs. If the follow-up UPDATE fails for any
+reason, the row stays in the DB without a canonical link — benign,
+and `dedup --rebuild` restores it. Explicit transactions aren't
+worth the complexity here.
+
+### `flatpilot dedup --rebuild` CLI command
 
 ```
-Usage: flatpilot dedup [OPTIONS]
+Usage: flatpilot dedup --rebuild
 
-Options:
-  --rebuild   Recompute canonical_flat_id for every flat in the DB.
+  Recompute canonical_flat_id for every flat in the DB.
 ```
 
-Default (no flag) is a no-op that prints cluster stats (total flats,
-canonical-set count, largest cluster size). With `--rebuild`:
+`--rebuild` is the only mode. No no-arg variant — stats without a
+clear single format aren't worth specifying, and adding them later
+is a separate bead if actually wanted.
+
+Steps:
 
 1. `UPDATE flats SET canonical_flat_id = NULL` (single statement).
 2. Iterate all flat ids in ascending order.
 3. Call `assign_canonical` on each.
-4. Print the before/after cluster stats.
+4. Print a one-liner: `rebuilt N flats → K clusters`.
 
 Ascending `id` order matters: it guarantees the oldest row in a
 cluster is always processed first and becomes canonical, so later
@@ -195,7 +221,8 @@ via `init_db` on a connection pointed at `:memory:`.
 Test groups:
 
 1. **`normalize_address`** — each normalization rule in isolation,
-   plus the full-pipeline table above.
+   plus the full-pipeline table above. Includes a case with a
+   postcode prefix and a case with a `42 a` → `42a` house number.
 2. **Match rule boundaries** — rent at 49/50/51 EUR delta; size at
    2.9/3.0/3.1 qm delta; same platform never matches; different
    normalized address never matches.
@@ -203,9 +230,22 @@ Test groups:
 4. **Chain follow** — insert A, B (linked to A), C that matches B
    but not A (e.g. rent drifted by 70). C should still link to A
    via B's `canonical_flat_id`.
-5. **`--rebuild`** — insert two twins, then tamper with the link
-   (`UPDATE flats SET canonical_flat_id = NULL`), run rebuild, check
+5. **Three-platform cluster** — insert three rows on three platforms
+   (WG-Gesucht, Kleinanzeigen, and a dummy third platform to
+   pre-empt ImmoScout24) that all share the same normalized key. All
+   three must end up with canonical = oldest.
+6. **Deleted canonical** — insert A, B (linked to A). `DELETE FROM
+   flats WHERE id = A`. B's `canonical_flat_id` becomes NULL (via
+   `ON DELETE SET NULL`), so B is now self-canonical. A new row C
+   that matches B should link to B, not NULL.
+7. **`--rebuild` restores tampered link** — insert two twins, then
+   `UPDATE flats SET canonical_flat_id = NULL`, run rebuild, check
    the link is restored.
+8. **`--rebuild` is idempotent** — run it twice in a row, final
+   state must equal state after the first run.
+9. **Ingest hook writes the link** — call `_insert_flat` directly
+   with a twin row and assert the link ends up on the new row (not
+   just unit-testing `assign_canonical` in isolation).
 
 All tests use `flatpilot.database.get_conn` pointed at a tempfile DB
 via a pytest fixture that swaps `DB_PATH`. No writes to
@@ -243,3 +283,16 @@ will read.
   `"Greifswalder Str 42a"` normalize differently (the `a` stays).
   That's intentional for now — flats in different buildings with
   the same street name must not cluster.
+- **Deleted canonical.** `ON DELETE SET NULL` on `canonical_flat_id`
+  means that deleting a canonical row leaves every cluster member
+  with a NULL link (each becomes self-canonical). New matches on any
+  surviving member work correctly via the `id < :self_id` rule.
+  `dedup --rebuild` re-roots the cluster at the oldest survivor.
+- **Non-canonical chain follow.** `find_canonical` trusts that
+  `match.canonical_flat_id` (when set) points at a true canonical
+  row. Under normal ingest this invariant holds because every link
+  is written through `assign_canonical`, which always chain-follows.
+  A manual `UPDATE` that breaks the invariant would be repaired by
+  `dedup --rebuild`. We don't defensively re-resolve at lookup time
+  — the extra SELECT isn't worth it for a case that can't arise
+  under normal operation.

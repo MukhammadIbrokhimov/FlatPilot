@@ -56,6 +56,17 @@ class RateLimitedError(RuntimeError):
     """HTTP 429 / 503 from the target platform; abort the current pass."""
 
 
+class ChallengeDetectedError(RuntimeError):
+    """Cloudflare / Turnstile / rate-limit text detected in the response body.
+
+    Raised by scrapers when :func:`flatpilot.scrapers.block_detect.classify_content`
+    (or a live-page iframe check) signals a challenge or block. The CLI
+    pipeline catches this and asks
+    :mod:`flatpilot.scrapers.backoff` for a longer cool-off than a plain
+    HTTP 429.
+    """
+
+
 @dataclass
 class SessionConfig:
     """Config for :func:`polite_session`.
@@ -76,6 +87,11 @@ class SessionConfig:
     # resize / scroll. Scrape paths keep the pinned viewport because the
     # D0 probe validated that fingerprint.
     no_viewport: bool = False
+    # Hand-rolled Chromium stealth: appends
+    # --disable-blink-features=AutomationControlled to launch args and
+    # injects an init script that deletes navigator.webdriver before
+    # any page script runs. Opt-in per platform.
+    stealth: bool = False
     # Extra flags forwarded to chromium.launch(args=…). Interactive
     # flows typically want "--start-maximized" so modals like the
     # consent banner are fully reachable on small laptop screens.
@@ -109,9 +125,13 @@ def polite_session(config: SessionConfig) -> Iterator[Any]:
     storage = str(state_path) if state_path.exists() else None
 
     with sync_playwright() as pw:
+        launch_args = list(config.launch_args)
+        if config.stealth and "--disable-blink-features=AutomationControlled" not in launch_args:
+            launch_args.append("--disable-blink-features=AutomationControlled")
+
         browser = pw.chromium.launch(
             headless=config.headless,
-            args=list(config.launch_args),
+            args=launch_args,
         )
         try:
             context_kwargs: dict[str, Any] = {
@@ -125,6 +145,16 @@ def polite_session(config: SessionConfig) -> Iterator[Any]:
             else:
                 context_kwargs["viewport"] = config.viewport
             context = browser.new_context(**context_kwargs)
+            if config.stealth:
+                # Runs before any page script on every navigation; masks
+                # the most common automation tell so Playwright contexts
+                # behave like a human's browser to naive bot-check code.
+                context.add_init_script(
+                    script=(
+                        "Object.defineProperty(navigator, 'webdriver', "
+                        "{get: () => undefined});"
+                    )
+                )
             try:
                 if config.warmup_url:
                     _warm_up(context, config)

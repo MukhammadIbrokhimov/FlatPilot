@@ -9,7 +9,7 @@ rule set and the rationale behind each clause.
 from __future__ import annotations
 
 import re
-import sqlite3  # noqa: F401 — used by follow-up task, imported now to avoid noise commit
+import sqlite3
 
 # Matches the Straße family as a whole word. The trailing ``\.?`` catches
 # the abbreviated ``Str.`` and ``str.`` forms; ``straße`` and ``strasse``
@@ -51,3 +51,50 @@ def normalize_address(raw: str | None) -> str | None:
     s = re.sub(r"\s+", " ", s).strip()
 
     return s or None
+
+
+def find_canonical(conn: sqlite3.Connection, flat: dict) -> int | None:
+    """Return the canonical flat id this row should link to, or ``None``.
+
+    Returns ``None`` when the row cannot be safely deduped (missing
+    address/rent/size) or when no existing older row matches on the
+    fuzzy key.
+    """
+    normalized = normalize_address(flat.get("address"))
+    rent = flat.get("rent_warm_eur")
+    size = flat.get("size_sqm")
+    if normalized is None or rent is None or size is None:
+        return None
+
+    rows = conn.execute(
+        """
+        SELECT id, canonical_flat_id, address
+          FROM flats
+         WHERE id < :self_id
+           AND platform != :platform
+           AND rent_warm_eur IS NOT NULL
+           AND size_sqm IS NOT NULL
+           AND address IS NOT NULL
+           AND ABS(rent_warm_eur - :rent) <= 50
+           AND ABS(size_sqm - :size)      <= 3
+         ORDER BY id ASC
+        """,
+        {
+            "self_id": flat["id"],
+            "platform": flat["platform"],
+            "rent": rent,
+            "size": size,
+        },
+    ).fetchall()
+
+    for row in rows:
+        if normalize_address(row["address"]) == normalized:
+            # Explicit None check — ``canonical_flat_id or row["id"]``
+            # would misroute if a row ever had id=0. SQLite AUTOINCREMENT
+            # starts at 1, but the explicit form documents the intent.
+            return (
+                row["canonical_flat_id"]
+                if row["canonical_flat_id"] is not None
+                else row["id"]
+            )
+    return None

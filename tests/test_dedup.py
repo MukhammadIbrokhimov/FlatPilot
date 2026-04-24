@@ -2,9 +2,34 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
-from flatpilot.matcher.dedup import normalize_address
+from flatpilot.matcher.dedup import find_canonical, normalize_address
+
+
+def _insert(conn, **overrides) -> int:
+    """Insert a minimal flat row and return its id. Tests override fields."""
+    now = datetime.now(UTC).isoformat()
+    row = {
+        "external_id": "ext",
+        "platform": "wg_gesucht",
+        "listing_url": "https://example.com/1",
+        "title": "test flat",
+        "rent_warm_eur": 800.0,
+        "size_sqm": 50.0,
+        "address": "Greifswalder Str. 42",
+        "scraped_at": now,
+        "first_seen_at": now,
+    }
+    row.update(overrides)
+    cols = ", ".join(row.keys())
+    placeholders = ", ".join(f":{c}" for c in row)
+    cursor = conn.execute(
+        f"INSERT INTO flats ({cols}) VALUES ({placeholders})", row
+    )
+    return cursor.lastrowid
 
 
 @pytest.mark.parametrize(
@@ -43,3 +68,103 @@ def test_normalize_preserves_distinct_house_numbers():
 def test_normalize_preserves_umlauts():
     """Non-Straße umlauts stay put."""
     assert normalize_address("Schöneberger Ufer 1") == "schöneberger ufer 1"
+
+
+def _flat(conn, flat_id):
+    row = conn.execute("SELECT * FROM flats WHERE id = ?", (flat_id,)).fetchone()
+    return dict(row)
+
+
+def test_find_canonical_returns_none_when_no_twin(tmp_db):
+    a = _insert(tmp_db, external_id="a")
+    assert find_canonical(tmp_db, _flat(tmp_db, a)) is None
+
+
+def test_find_canonical_matches_cross_platform_twin(tmp_db):
+    a = _insert(tmp_db, external_id="a", platform="wg_gesucht")
+    b = _insert(tmp_db, external_id="b", platform="kleinanzeigen")
+    assert find_canonical(tmp_db, _flat(tmp_db, b)) == a
+
+
+def test_find_canonical_never_matches_same_platform(tmp_db):
+    _insert(tmp_db, external_id="a", platform="wg_gesucht")
+    b = _insert(
+        tmp_db, external_id="b", platform="wg_gesucht", listing_url="u2"
+    )
+    assert find_canonical(tmp_db, _flat(tmp_db, b)) is None
+
+
+@pytest.mark.parametrize("rent_delta, should_match", [
+    (49.0, True),
+    (50.0, True),
+    (51.0, False),
+    (-50.0, True),
+    (-51.0, False),
+])
+def test_find_canonical_rent_boundary(tmp_db, rent_delta, should_match):
+    a = _insert(tmp_db, external_id="a", platform="wg_gesucht", rent_warm_eur=800.0)
+    b = _insert(
+        tmp_db,
+        external_id="b",
+        platform="kleinanzeigen",
+        rent_warm_eur=800.0 + rent_delta,
+    )
+    result = find_canonical(tmp_db, _flat(tmp_db, b))
+    assert (result == a) is should_match
+
+
+@pytest.mark.parametrize("size_delta, should_match", [
+    (2.9, True),
+    (3.0, True),
+    (3.1, False),
+    (-3.0, True),
+    (-3.1, False),
+])
+def test_find_canonical_size_boundary(tmp_db, size_delta, should_match):
+    a = _insert(tmp_db, external_id="a", platform="wg_gesucht", size_sqm=50.0)
+    b = _insert(
+        tmp_db,
+        external_id="b",
+        platform="kleinanzeigen",
+        size_sqm=50.0 + size_delta,
+    )
+    result = find_canonical(tmp_db, _flat(tmp_db, b))
+    assert (result == a) is should_match
+
+
+def test_find_canonical_different_address_no_match(tmp_db):
+    _insert(tmp_db, external_id="a", platform="wg_gesucht",
+            address="Greifswalder Str. 42")
+    b = _insert(tmp_db, external_id="b", platform="kleinanzeigen",
+                address="Kastanienallee 3")
+    assert find_canonical(tmp_db, _flat(tmp_db, b)) is None
+
+
+@pytest.mark.parametrize("missing_field", ["address", "rent_warm_eur", "size_sqm"])
+def test_find_canonical_missing_field_returns_none(tmp_db, missing_field):
+    _insert(tmp_db, external_id="a", platform="wg_gesucht")
+    b = _insert(
+        tmp_db, external_id="b", platform="kleinanzeigen",
+        **{missing_field: None},
+    )
+    assert find_canonical(tmp_db, _flat(tmp_db, b)) is None
+
+
+def test_find_canonical_chain_follow(tmp_db):
+    """A -> B -> C: C matches B but not A. Canonical of C must be A."""
+    a = _insert(tmp_db, external_id="a", platform="wg_gesucht", rent_warm_eur=800.0)
+    b = _insert(tmp_db, external_id="b", platform="kleinanzeigen",
+                rent_warm_eur=840.0)
+    # Link B to A to simulate a previous assign_canonical call.
+    tmp_db.execute("UPDATE flats SET canonical_flat_id = ? WHERE id = ?", (a, b))
+    # C matches B (rent delta 50) but not A (rent delta 100).
+    c = _insert(tmp_db, external_id="c", platform="immoscout",
+                rent_warm_eur=890.0)
+    assert find_canonical(tmp_db, _flat(tmp_db, c)) == a
+
+
+def test_find_canonical_only_looks_at_older_rows(tmp_db):
+    """Oldest row (lowest id) must never get linked to a younger twin."""
+    a = _insert(tmp_db, external_id="a", platform="wg_gesucht")
+    _insert(tmp_db, external_id="b", platform="kleinanzeigen")
+    assert find_canonical(tmp_db, _flat(tmp_db, a)) is None

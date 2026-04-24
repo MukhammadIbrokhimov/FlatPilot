@@ -122,3 +122,27 @@ def test_challenge_detected_error_is_exported() -> None:
     from flatpilot.scrapers.session import ChallengeDetectedError as Canon
 
     assert Re is Canon
+
+
+def test_challenge_wins_when_body_contains_both_signals() -> None:
+    """A challenge page whose text also mentions a block phrase must
+    still classify as ``challenge_cloudflare`` — callers apply a longer
+    cool-off for challenges, and parsing a challenge page is pointless."""
+    from flatpilot.scrapers.block_detect import classify_content
+
+    html = (
+        "<html><body>"
+        "<h1>Just a moment...</h1>"
+        "<p>Access denied — checking your browser.</p>"
+        "</body></html>"
+    )
+    assert classify_content(html, city="Berlin") == "challenge_cloudflare"
+
+
+def test_none_html_is_treated_as_unknown() -> None:
+    """Defensive: ``html or ""`` means ``None`` passes through as an empty
+    body → ``unknown`` rather than crashing. Pins the fallback so a future
+    refactor can't tighten it without noticing."""
+    from flatpilot.scrapers.block_detect import classify_content
+
+    assert classify_content(None, city="Berlin") == "unknown"  # type: ignore[arg-type]

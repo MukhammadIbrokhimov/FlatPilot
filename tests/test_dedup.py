@@ -365,3 +365,42 @@ def test_rebuild_re_roots_after_deleted_canonical(tmp_db):
     }
     assert rows[b] is None
     assert rows[c] == b
+
+
+def test_three_platform_cluster_all_link_to_oldest(tmp_db):
+    """All three platforms share one apartment → one canonical row."""
+    a = _insert(tmp_db, external_id="a", platform="wg_gesucht")
+    b = _insert(tmp_db, external_id="b", platform="kleinanzeigen")
+    c = _insert(tmp_db, external_id="c", platform="immoscout")
+    for flat_id in (b, c):
+        assign_canonical(tmp_db, flat_id)
+    rows = {
+        r["id"]: r["canonical_flat_id"]
+        for r in tmp_db.execute(
+            "SELECT id, canonical_flat_id FROM flats ORDER BY id"
+        ).fetchall()
+    }
+    assert rows[a] is None
+    assert rows[b] == a
+    assert rows[c] == a
+
+
+def test_deleted_canonical_leaves_survivor_self_canonical(tmp_db):
+    """ON DELETE SET NULL + ingest of a new twin after deletion."""
+    a = _insert(tmp_db, external_id="a", platform="wg_gesucht")
+    b = _insert(tmp_db, external_id="b", platform="kleinanzeigen")
+    assign_canonical(tmp_db, b)
+    tmp_db.execute("DELETE FROM flats WHERE id = ?", (a,))
+    # B should now have canonical_flat_id = NULL (from SET NULL).
+    row_b = tmp_db.execute(
+        "SELECT canonical_flat_id FROM flats WHERE id = ?", (b,)
+    ).fetchone()
+    assert row_b["canonical_flat_id"] is None
+
+    # A new row C that matches B should link to B, not to the dead A.
+    c = _insert(tmp_db, external_id="c", platform="immoscout")
+    assign_canonical(tmp_db, c)
+    row_c = tmp_db.execute(
+        "SELECT canonical_flat_id FROM flats WHERE id = ?", (c,)
+    ).fetchone()
+    assert row_c["canonical_flat_id"] == b

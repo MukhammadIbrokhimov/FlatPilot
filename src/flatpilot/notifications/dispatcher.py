@@ -150,7 +150,11 @@ def dispatch_pending(profile: Profile) -> DispatchSummary:
     # can't cover: legacy match rows written before PR #21, and any
     # row churn from a future `dedup --rebuild` that re-clusters already
     # matched flats. For each (canonical_id, channel), we send at most
-    # once; later siblings inherit the notified stamp without firing.
+    # once per run; this inheritance is in-memory only, so if a
+    # canonical's match row is later deleted (e.g. the root flat
+    # is delisted, cascading ON DELETE), a surviving sibling becomes
+    # the new live canonical and fires at its next dispatch — the
+    # "one ping per live canonical" semantic from the k40y plan.
     sent_canonicals: dict[int, set[str]] = {}
     sent: dict[str, int] = {}
     failed: dict[str, int] = {}

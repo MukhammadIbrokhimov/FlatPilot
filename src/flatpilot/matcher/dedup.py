@@ -98,3 +98,22 @@ def find_canonical(conn: sqlite3.Connection, flat: dict) -> int | None:
                 else row["id"]
             )
     return None
+
+
+def assign_canonical(conn: sqlite3.Connection, flat_id: int) -> None:
+    """Look up a twin for the row with ``flat_id`` and stamp the link.
+
+    Safe to call on any flat id — a missing row, a row that cannot be
+    deduped (missing fields), or the oldest member of a new cluster
+    all result in a no-op.
+    """
+    row = conn.execute("SELECT * FROM flats WHERE id = ?", (flat_id,)).fetchone()
+    if row is None:
+        return
+    canonical = find_canonical(conn, dict(row))
+    if canonical is None or canonical == flat_id:
+        return
+    conn.execute(
+        "UPDATE flats SET canonical_flat_id = ? WHERE id = ?",
+        (canonical, flat_id),
+    )

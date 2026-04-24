@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from flatpilot.matcher.dedup import find_canonical, normalize_address
+from flatpilot.matcher.dedup import assign_canonical, find_canonical, normalize_address
 
 
 def _insert(conn, **overrides) -> int:
@@ -168,3 +168,37 @@ def test_find_canonical_only_looks_at_older_rows(tmp_db):
     a = _insert(tmp_db, external_id="a", platform="wg_gesucht")
     _insert(tmp_db, external_id="b", platform="kleinanzeigen")
     assert find_canonical(tmp_db, _flat(tmp_db, a)) is None
+
+
+def test_assign_canonical_links_twin(tmp_db):
+    a = _insert(tmp_db, external_id="a", platform="wg_gesucht")
+    b = _insert(tmp_db, external_id="b", platform="kleinanzeigen")
+    assign_canonical(tmp_db, b)
+    row = tmp_db.execute(
+        "SELECT canonical_flat_id FROM flats WHERE id = ?", (b,)
+    ).fetchone()
+    assert row["canonical_flat_id"] == a
+
+
+def test_assign_canonical_is_noop_when_no_twin(tmp_db):
+    a = _insert(tmp_db, external_id="a", platform="wg_gesucht")
+    assign_canonical(tmp_db, a)
+    row = tmp_db.execute(
+        "SELECT canonical_flat_id FROM flats WHERE id = ?", (a,)
+    ).fetchone()
+    assert row["canonical_flat_id"] is None
+
+
+def test_assign_canonical_never_self_links(tmp_db):
+    """The canonical row (oldest) must stay with canonical_flat_id = NULL."""
+    a = _insert(tmp_db, external_id="a", platform="wg_gesucht")
+    _insert(tmp_db, external_id="b", platform="kleinanzeigen")
+    assign_canonical(tmp_db, a)
+    row = tmp_db.execute(
+        "SELECT canonical_flat_id FROM flats WHERE id = ?", (a,)
+    ).fetchone()
+    assert row["canonical_flat_id"] is None
+
+
+def test_assign_canonical_missing_row_noop(tmp_db):
+    assign_canonical(tmp_db, 99999)  # should not raise

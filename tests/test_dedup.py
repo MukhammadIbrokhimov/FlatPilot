@@ -200,5 +200,49 @@ def test_assign_canonical_never_self_links(tmp_db):
     assert row["canonical_flat_id"] is None
 
 
+def test_assign_canonical_noop_when_row_missing_rent(tmp_db):
+    """Address present but rent missing → no-op at the wrapper layer."""
+    _insert(tmp_db, external_id="a", platform="wg_gesucht")
+    b = _insert(
+        tmp_db,
+        external_id="b",
+        platform="kleinanzeigen",
+        rent_warm_eur=None,
+    )
+    assign_canonical(tmp_db, b)
+    row = tmp_db.execute(
+        "SELECT canonical_flat_id FROM flats WHERE id = ?", (b,)
+    ).fetchone()
+    assert row["canonical_flat_id"] is None
+
+
+def test_assign_canonical_noop_when_row_missing_size(tmp_db):
+    """Address present but size missing → no-op at the wrapper layer."""
+    _insert(tmp_db, external_id="a", platform="wg_gesucht")
+    b = _insert(
+        tmp_db,
+        external_id="b",
+        platform="kleinanzeigen",
+        size_sqm=None,
+    )
+    assign_canonical(tmp_db, b)
+    row = tmp_db.execute(
+        "SELECT canonical_flat_id FROM flats WHERE id = ?", (b,)
+    ).fetchone()
+    assert row["canonical_flat_id"] is None
+
+
 def test_assign_canonical_missing_row_noop(tmp_db):
-    assign_canonical(tmp_db, 99999)  # should not raise
+    """Unknown ids must not raise and must not mutate the table."""
+    a = _insert(tmp_db, external_id="a", platform="wg_gesucht")
+    before = tmp_db.execute(
+        "SELECT id, canonical_flat_id FROM flats ORDER BY id"
+    ).fetchall()
+
+    assign_canonical(tmp_db, 99999)
+
+    after = tmp_db.execute(
+        "SELECT id, canonical_flat_id FROM flats ORDER BY id"
+    ).fetchall()
+    assert [tuple(r) for r in before] == [tuple(r) for r in after]
+    assert before[0]["id"] == a

@@ -536,3 +536,105 @@ def test_notifier_dedups_by_canonical(tmp_db, monkeypatch):
     assert summary["sent"] == {"telegram": 1}
     assert len(calls) == 1
     assert calls[0] == ("telegram", 1)  # the canonical root wins
+
+
+def test_three_platform_cluster_produces_one_match_and_one_notification(tmp_db, monkeypatch):
+    """All three platforms → one match row, one notification per channel."""
+    from flatpilot.cli import _insert_flat
+    from flatpilot.matcher import runner
+    from flatpilot.notifications import dispatcher
+
+    profile_obj = _minimal_profile(telegram_enabled=True)
+    monkeypatch.setattr(runner, "load_profile", lambda: profile_obj)
+
+    now = datetime.now(UTC).isoformat()
+    for ext, plat, rent in (
+        ("wg-1", "wg_gesucht", 800.0),
+        ("ka-1", "kleinanzeigen", 810.0),
+        ("is-1", "immoscout", 820.0),
+    ):
+        _insert_flat(
+            tmp_db,
+            {
+                "external_id": ext,
+                "listing_url": f"https://example.com/{ext}",
+                "title": "A",
+                "rent_warm_eur": rent,
+                "size_sqm": 50.0,
+                "rooms": 2.0,
+                "address": "Greifswalder Str. 42",
+            },
+            plat,
+            now,
+        )
+
+    runner.run_match()
+    assert tmp_db.execute("SELECT COUNT(*) FROM matches").fetchone()[0] == 1
+
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        dispatcher, "_send", lambda c, f, _p: calls.append((c, f["id"]))
+    )
+    summary = dispatcher.dispatch_pending(profile_obj)
+    assert summary["sent"] == {"telegram": 1}
+    assert len(calls) == 1
+
+
+def test_deleted_canonical_releases_survivor_for_fresh_matching(tmp_db, monkeypatch):
+    """When the canonical is deleted, the surviving duplicate becomes a root
+    and gets its own match — "one ping per *live* canonical" semantics."""
+    from flatpilot.cli import _insert_flat
+    from flatpilot.matcher import runner
+
+    profile = _minimal_profile()
+    monkeypatch.setattr(runner, "load_profile", lambda: profile)
+
+    now = datetime.now(UTC).isoformat()
+    _insert_flat(
+        tmp_db,
+        {
+            "external_id": "wg-1",
+            "listing_url": "https://wg-gesucht.de/1",
+            "title": "A",
+            "rent_warm_eur": 800.0,
+            "size_sqm": 50.0,
+            "rooms": 2.0,
+            "address": "Greifswalder Str. 42",
+        },
+        "wg_gesucht",
+        now,
+    )
+    _insert_flat(
+        tmp_db,
+        {
+            "external_id": "ka-1",
+            "listing_url": "https://kleinanzeigen.de/1",
+            "title": "B",
+            "rent_warm_eur": 810.0,
+            "size_sqm": 51.0,
+            "rooms": 2.0,
+            "address": "10435 Berlin, Greifswalder Straße 42",
+        },
+        "kleinanzeigen",
+        now,
+    )
+
+    # First pass: matcher writes one match for the root (flat id 1).
+    runner.run_match()
+    assert tmp_db.execute(
+        "SELECT flat_id FROM matches"
+    ).fetchone()["flat_id"] == 1
+
+    # Delete the canonical — ON DELETE SET NULL releases the duplicate.
+    tmp_db.execute("DELETE FROM flats WHERE id = 1")
+    row = tmp_db.execute(
+        "SELECT canonical_flat_id FROM flats WHERE id = 2"
+    ).fetchone()
+    assert row["canonical_flat_id"] is None
+
+    # Second pass: the survivor is now a root and gets its own match.
+    runner.run_match()
+    rows = tmp_db.execute(
+        "SELECT flat_id FROM matches ORDER BY flat_id"
+    ).fetchall()
+    assert [r["flat_id"] for r in rows] == [2]  # old row cascaded away

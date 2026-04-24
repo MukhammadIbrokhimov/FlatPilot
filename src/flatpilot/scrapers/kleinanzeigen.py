@@ -37,6 +37,11 @@ from urllib.parse import urljoin
 from flatpilot.profile import Profile
 from flatpilot.scrapers import register
 from flatpilot.scrapers.base import Flat
+from flatpilot.scrapers.block_detect import (
+    ChallengeDetectedError,
+    classify_content,
+    has_captcha_iframe,
+)
 from flatpilot.scrapers.session import (
     DEFAULT_USER_AGENT,
     SessionConfig,
@@ -46,6 +51,7 @@ from flatpilot.scrapers.session import (
 from flatpilot.scrapers.session import (
     page as session_page,
 )
+from flatpilot.scrapers.ua_pool import pin_user_agent
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +93,13 @@ class UnknownCityError(ValueError):
 @register
 class KleinanzeigenScraper:
     platform: ClassVar[str] = "kleinanzeigen"
+    # Kept for protocol compatibility. The actual UA used per call is
+    # picked from the pool via resolve_user_agent() so repeated fresh
+    # sessions don't all share one fingerprint.
     user_agent: ClassVar[str] = DEFAULT_USER_AGENT
+
+    def resolve_user_agent(self) -> str:
+        return pin_user_agent(self.platform)
 
     def fetch_new(self, profile: Profile) -> Iterable[Flat]:
         loc_id = CITY_IDS.get(profile.city)
@@ -100,9 +112,10 @@ class KleinanzeigenScraper:
         url = self._search_url(profile.city, loc_id, profile.radius_km)
         config = SessionConfig(
             platform=self.platform,
-            user_agent=self.user_agent,
+            user_agent=self.resolve_user_agent(),
             warmup_url=WARMUP_URL,
             consent_selectors=CONSENT_SELECTORS,
+            stealth=True,
         )
 
         logger.info("%s: fetching %s", self.platform, url)
@@ -117,7 +130,7 @@ class KleinanzeigenScraper:
                     "%s: search returned HTTP %d", self.platform, response.status
                 )
                 return
-            html = pg.content()
+            html = _handle_response(pg, city=profile.city)
 
         flats = list(parse_listings(html))
         logger.info(
@@ -130,6 +143,27 @@ class KleinanzeigenScraper:
         slug = city.strip().lower().replace(" ", "-")
         suffix = f"r{radius_km}" if radius_km and radius_km > 0 else ""
         return f"{HOST}/s-wohnung-mieten/{slug}/c203l{loc_id}{suffix}"
+
+
+def _handle_response(page: Any, *, city: str) -> str:
+    """Classify the current ``page`` and return its HTML on ok/unknown.
+
+    Raises :class:`ChallengeDetectedError` on a captcha iframe,
+    Cloudflare soft challenge, or hard block keyword. The ``unknown``
+    classifier outcome — thin body or city not mentioned — is
+    deliberately passed through: a legitimate empty search is thin by
+    definition and must not trigger a cool-off.
+    """
+    if has_captcha_iframe(page):
+        raise ChallengeDetectedError(f"kleinanzeigen: captcha iframe present for {city}")
+
+    html = page.content()
+    outcome = classify_content(html, city=city)
+    if outcome in ("challenge_cloudflare", "block_keyword"):
+        raise ChallengeDetectedError(f"kleinanzeigen: {outcome} detected for {city}")
+    # ok and unknown both return the HTML; parse_listings yields zero
+    # on an empty page without error.
+    return html
 
 
 def parse_listings(html: str) -> Iterable[Flat]:

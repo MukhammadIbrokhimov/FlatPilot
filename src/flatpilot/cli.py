@@ -304,16 +304,32 @@ def _run_scrape_pass(scrapers: list, profile, console) -> None:
     from datetime import datetime
 
     from flatpilot.database import get_conn
-    from flatpilot.scrapers.session import RateLimitedError
+    from flatpilot.scrapers import backoff
+    from flatpilot.scrapers.session import ChallengeDetectedError, RateLimitedError
 
     conn = get_conn()
-    now = datetime.now(UTC).isoformat()
+    now_dt = datetime.now(UTC)
+    now = now_dt.isoformat()
     for scraper in scrapers:
         plat = scraper.platform
+        skip, remaining = backoff.should_skip(plat, now=now_dt)
+        if skip:
+            console.print(
+                f"[dim]{plat}: cooling off for {remaining:.0f}s more — skipping[/dim]"
+            )
+            continue
         try:
             flats = list(scraper.fetch_new(profile))
         except RateLimitedError as exc:
+            backoff.on_failure(plat, "rate_limit", now=datetime.now(UTC))
             console.print(f"[yellow]{plat}: {exc} — skipping this pass[/yellow]")
+            continue
+        except ChallengeDetectedError as exc:
+            backoff.on_failure(plat, "challenge", now=datetime.now(UTC))
+            console.print(
+                f"[red]{plat}: anti-bot challenge detected ({exc}) — "
+                f"extended cool-off[/red]"
+            )
             continue
         except Exception as exc:
             console.print(
@@ -329,6 +345,7 @@ def _run_scrape_pass(scrapers: list, profile, console) -> None:
             f"{plat}: [bold]{len(flats)}[/bold] listings, "
             f"[green]{new_count}[/green] new"
         )
+        backoff.on_success(plat)
 
 
 def _insert_flat(conn, flat, platform: str, now: str) -> bool:

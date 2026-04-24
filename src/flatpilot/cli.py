@@ -343,7 +343,35 @@ def _insert_flat(conn, flat, platform: str, now: str) -> bool:
         f"VALUES ({placeholders})"
     )
     cursor = conn.execute(sql, row)
-    return cursor.rowcount > 0
+    if cursor.rowcount == 0:
+        return False
+    from flatpilot.matcher.dedup import assign_canonical
+
+    assign_canonical(conn, cursor.lastrowid)
+    return True
+
+
+@app.command()
+def dedup(
+    rebuild: bool = typer.Option(
+        False, "--rebuild", help="Recompute canonical_flat_id for every flat."
+    ),
+) -> None:
+    """Populate flats.canonical_flat_id across the database."""
+    from rich.console import Console
+
+    from flatpilot.database import get_conn, init_db
+    from flatpilot.matcher.dedup import rebuild as do_rebuild
+
+    console = Console()
+    if not rebuild:
+        console.print("[yellow]Nothing to do. Pass --rebuild to re-cluster.[/yellow]")
+        raise typer.Exit(code=0)
+
+    init_db()
+    conn = get_conn()
+    total, clusters = do_rebuild(conn)
+    console.print(f"rebuilt [bold]{total}[/bold] flats → [bold]{clusters}[/bold] clusters")
 
 
 @app.command()

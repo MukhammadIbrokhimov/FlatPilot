@@ -474,7 +474,7 @@ def _render(
         }});
         const data = await resp.json();
         if (resp.ok && data.ok) {{
-          window.flatpilotToast('Applied: ' + (data.stdout_tail || 'ok'));
+          window.flatpilotToast('Applied successfully');
           btn.textContent = 'Applied ✓';
         }} else {{
           const msg = data.stdout_tail || data.error || resp.status;

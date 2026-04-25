@@ -105,7 +105,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if body is None:
             return  # _read_json_body already responded.
         flat_id = body.get("flat_id")
-        if not isinstance(flat_id, int):
+        # bool is a subclass of int — guard explicitly so {"flat_id": true}
+        # doesn't slip through and spawn `flatpilot apply True`.
+        if not isinstance(flat_id, int) or isinstance(flat_id, bool):
             self._send_json(
                 HTTPStatus.BAD_REQUEST,
                 {"error": "request body must be {'flat_id': <int>}"},

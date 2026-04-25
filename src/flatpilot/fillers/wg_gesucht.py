@@ -35,13 +35,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
 from flatpilot.fillers import register
 from flatpilot.fillers.base import (
-    FillError,
+    FillError,  # noqa: F401 — re-exported for callers that catch the base class
     FillReport,
     FormNotFoundError,
     NotAuthenticatedError,
     SelectorMissingError,
+    SubmitVerificationError,
 )
 from flatpilot.scrapers.session import (
     DEFAULT_USER_AGENT,
@@ -170,10 +173,10 @@ class WGGesuchtFiller:
                 # messenger redirects to /nachrichten/<thread> on
                 # success; on validation failure it stays on the form
                 # URL and renders an inline error banner.
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(PlaywrightTimeoutError):
                     pg.wait_for_load_state("networkidle", timeout=SUBMIT_NAV_WAIT_MS)
                 if FORM_URL_SEGMENT in (pg.url or ""):
-                    raise FillError(
+                    raise SubmitVerificationError(
                         f"{self.platform}: submit did not navigate away from the "
                         f"form URL ({pg.url}) — message likely rejected by validation"
                     )

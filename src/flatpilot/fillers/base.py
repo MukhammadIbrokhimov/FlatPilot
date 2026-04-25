@@ -44,6 +44,16 @@ class NotAuthenticatedError(FillError):
     """
 
 
+class SubmitVerificationError(FillError):
+    """Submit click landed but verification (URL change, banner check) failed.
+
+    Distinct from :class:`SelectorMissingError` (the button itself is gone)
+    and :class:`FormNotFoundError` (we never reached the form). Used when
+    the click happened but the platform appears to have rejected the
+    message — the form URL didn't change, an inline error rendered, etc.
+    """
+
+
 @dataclass
 class FillReport:
     """Outcome of a :meth:`Filler.fill` call.

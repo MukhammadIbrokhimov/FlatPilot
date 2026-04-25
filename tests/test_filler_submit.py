@@ -3,6 +3,14 @@
 We don't drive a real browser here — Playwright is mocked. The point is
 to lock the contract: ``fill(submit=False)`` does not click the submit
 selector; ``fill(submit=True)`` does, and updates ``FillReport.submitted``.
+
+URL ordering invariant: the click is what drives the URL transition. The
+fixture starts ``page.url`` on the form URL. In the success test, the
+submit locator's ``click_handler`` flips ``page.url`` to the post-submit
+URL so the URL guard sees a navigated page. In the "stayed on form" test
+no handler is wired, so URL stays on the form URL and the guard raises.
+This means a regression that checks the URL *before* the click fires
+will see the form URL and raise — the success test catches that.
 """
 
 from __future__ import annotations
@@ -11,16 +19,26 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from flatpilot.fillers.base import FillError
+from flatpilot.fillers.base import SubmitVerificationError
 from flatpilot.fillers.wg_gesucht import SELECTORS, WGGesuchtFiller
+
+_FORM_URL = "https://www.wg-gesucht.de/nachricht-senden/listing-123.html"
+_POST_SUBMIT_URL = "https://www.wg-gesucht.de/nachrichten/inbox.html"
 
 
 class _Locator:
     """Minimal stand-in for a Playwright Locator used by the filler."""
 
-    def __init__(self, *, count: int = 1, href: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        count: int = 1,
+        href: str | None = None,
+        click_handler=None,
+    ) -> None:
         self._count = count
         self._href = href
+        self.click_handler = click_handler
         self.fill_calls: list[str] = []
         self.set_files_calls: list[list[str]] = []
         self.click_calls: int = 0
@@ -46,6 +64,8 @@ class _Locator:
 
     def click(self) -> None:
         self.click_calls += 1
+        if self.click_handler is not None:
+            self.click_handler()
 
     def wait_for(self, **kwargs) -> None:
         self.wait_calls.append(kwargs)
@@ -61,10 +81,9 @@ class _FakePage:
         self,
         *,
         on_form_already_visible: bool = True,
-        post_submit_url: str | None = None,
     ) -> None:
-        self.url = "https://www.wg-gesucht.de/listing/123.html"
-        self._post_submit_url = post_submit_url
+        # Start on the form URL so the URL guard is meaningful.
+        self.url = _FORM_URL
         self._goto_calls: list[str] = []
         self._locators: dict[str, _Locator] = {
             SELECTORS.form: _Locator(count=1 if on_form_already_visible else 0),
@@ -77,8 +96,6 @@ class _FakePage:
 
     def goto(self, url: str, **kwargs):
         self._goto_calls.append(url)
-        if self._post_submit_url:
-            self.url = self._post_submit_url
         response = MagicMock()
         response.status = 200
         return response
@@ -147,7 +164,10 @@ def test_fill_dry_run_does_not_click_submit(fake_session):
 
 
 def test_fill_with_submit_true_clicks_submit_and_marks_submitted(fake_session):
-    fake_session._post_submit_url = "https://www.wg-gesucht.de/nachrichten/inbox.html"
+    # Wire click_handler so the click — not goto — drives the URL transition.
+    fake_session.submit_locator.click_handler = lambda: setattr(
+        fake_session, "url", _POST_SUBMIT_URL
+    )
 
     filler = WGGesuchtFiller()
     report = filler.fill(
@@ -162,12 +182,9 @@ def test_fill_with_submit_true_clicks_submit_and_marks_submitted(fake_session):
 
 
 def test_fill_submit_raises_when_url_stayed_on_form(fake_session):
-    # Page never navigates away — submit was effectively ignored.
-    fake_session._post_submit_url = "https://www.wg-gesucht.de/nachricht-senden/123.html"
-    fake_session.url = "https://www.wg-gesucht.de/nachricht-senden/123.html"
-
+    # No click_handler wired — page URL stays on the form URL after click.
     filler = WGGesuchtFiller()
-    with pytest.raises(FillError, match="submit did not navigate"):
+    with pytest.raises(SubmitVerificationError, match="submit did not navigate"):
         filler.fill(
             listing_url="https://www.wg-gesucht.de/listing/123.html",
             message="Hallo, ich bin interessiert.",

@@ -59,8 +59,13 @@ def _post(url: str, body: bytes = b"") -> tuple[int, bytes]:
         return exc.code, exc.read()
 
 
-def _seed_match_with_profile(conn, tmp_path):
-    """Insert a flat + match and write a profile so endpoints have one."""
+def _seed_match_with_profile(conn):
+    """Insert a flat + match and write a profile so endpoints have one.
+
+    Relies on the ``tmp_db`` fixture having monkey-patched
+    ``flatpilot.profile.PROFILE_PATH`` to a temp location, so
+    ``save_profile`` doesn't touch the user's real ``~/.flatpilot``.
+    """
     from flatpilot.profile import Profile, profile_hash, save_profile
 
     profile = Profile.load_example().model_copy(update={"city": "Berlin"})
@@ -87,8 +92,8 @@ def _seed_match_with_profile(conn, tmp_path):
     return flat_id, int(cur.lastrowid)
 
 
-def test_post_skip_marks_match_skipped(tmp_db, tmp_path):
-    flat_id, match_id = _seed_match_with_profile(tmp_db, tmp_path)
+def test_post_skip_marks_match_skipped(tmp_db):
+    flat_id, match_id = _seed_match_with_profile(tmp_db)
     with _running_server(tmp_db) as port:
         status, body = _post(f"http://127.0.0.1:{port}/api/matches/{match_id}/skip")
 
@@ -103,8 +108,8 @@ def test_post_skip_marks_match_skipped(tmp_db, tmp_path):
     assert cnt == 1
 
 
-def test_post_skip_unknown_match_id_returns_404(tmp_db, tmp_path):
-    _seed_match_with_profile(tmp_db, tmp_path)  # ensure profile exists
+def test_post_skip_unknown_match_id_returns_404(tmp_db):
+    _seed_match_with_profile(tmp_db)  # ensure profile exists
     with _running_server(tmp_db) as port:
         status, body = _post(f"http://127.0.0.1:{port}/api/matches/999/skip")
 

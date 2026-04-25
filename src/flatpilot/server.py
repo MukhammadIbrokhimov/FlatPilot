@@ -37,7 +37,7 @@ from urllib.parse import urlparse
 # Eagerly populate registries the request handlers will need.
 import flatpilot.fillers.wg_gesucht  # noqa: F401
 import flatpilot.schemas  # noqa: F401
-from flatpilot.applications import record_response, record_skip  # noqa: F401
+from flatpilot.applications import record_response, record_skip
 from flatpilot.database import get_conn, init_db
 from flatpilot.profile import load_profile, profile_hash
 from flatpilot.view import generate_html
@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_PORT = 8765
 
 _SKIP_RE = re.compile(r"^/api/matches/(\d+)/skip$")
+_RESPONSE_RE = re.compile(r"^/api/applications/(\d+)/response$")
 _APPLY_PATH = "/api/applications"
 
 
@@ -94,6 +95,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         skip_match = _SKIP_RE.match(path)
         if skip_match:
             self._handle_skip(int(skip_match.group(1)))
+            return
+        response_match = _RESPONSE_RE.match(path)
+        if response_match:
+            self._handle_response(int(response_match.group(1)))
             return
         if path == _APPLY_PATH:
             self._handle_apply()
@@ -154,6 +159,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
             return
         self._send_json(HTTPStatus.OK, {"ok": True, "match_id": match_id})
+
+    def _handle_response(self, application_id: int) -> None:
+        body = self._read_json_body()
+        if body is None:
+            return
+        status_value = body.get("status")
+        response_text = body.get("response_text", "")
+        if not isinstance(status_value, str) or not isinstance(response_text, str):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "body must be {'status': str, 'response_text': str}"},
+            )
+            return
+        init_db()
+        conn = get_conn()
+        try:
+            record_response(
+                conn,
+                application_id=application_id,
+                status=status_value,  # type: ignore[arg-type]
+                response_text=response_text,
+            )
+        except LookupError as exc:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+            return
+        except ValueError as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+        self._send_json(HTTPStatus.OK, {"ok": True, "application_id": application_id})
 
     def _send_json(self, status: HTTPStatus, body: dict) -> None:
         payload = json.dumps(body)

@@ -305,10 +305,52 @@ def _application_row(app: dict[str, Any]) -> str:
 
 
 def _responses_pane(applications: list[dict[str, Any]]) -> str:
-    """Placeholder pane — Task 9 fills this in. Empty list shows hint."""
     if not applications:
-        return '<p class="empty">No responses to record. Apply to a flat first.</p>'
-    return '<p class="empty">Responses tab populated by M4.</p>'
+        return (
+            '<p class="empty">No responses to record. Apply to a flat first.</p>'
+        )
+    cards = "\n".join(_response_form(app) for app in applications)
+    return f'<div class="cards">{cards}</div>'
+
+
+def _response_form(app: dict[str, Any]) -> str:
+    app_id = app.get("id")
+    title = escape(str(app.get("title") or "Untitled listing"))
+    current_status = str(app.get("status") or "")
+    badge = (
+        f'<span class="badge badge-{escape(current_status, quote=True)}">'
+        f"{escape(current_status.replace('_', ' '))}</span>"
+    )
+    response_text = escape(str(app.get("response_text") or ""))
+    response_at = app.get("response_received_at") or ""
+
+    # Only post-application transitions are exposed in the form;
+    # 'submitted' / 'failed' are L4-set and not user-editable here.
+    options_html = ""
+    for option in ("viewing_invited", "rejected", "no_response"):
+        options_html += (
+            f'<option value="{option}">{escape(option.replace("_", " "))}</option>'
+        )
+
+    return (
+        f'<article class="card response" data-application-id="{app_id}">'
+        f"<h3>{title} {badge}</h3>"
+        + (
+            f'<p class="reasons">Last response recorded: {escape(str(response_at))}</p>'
+            if response_at
+            else ""
+        )
+        + '<form class="response-form">'
+        + '<label>New status <select class="resp-status">'
+        + options_html
+        + "</select></label>"
+        + '<label>Reply text<br>'
+        + f'<textarea class="resp-text" rows="4" cols="60">{response_text}</textarea>'
+        + "</label>"
+        + '<button type="submit" class="resp-submit">Save</button>'
+        + "</form>"
+        + "</article>"
+    )
 
 
 def _render(
@@ -379,6 +421,11 @@ def _render(
   .badge-viewing_invited {{ background: rgba(34,170,85,0.15); color: #2a7; }}
   .badge-rejected {{ background: rgba(120,120,120,0.15); color: #888; }}
   .badge-no_response {{ background: rgba(180,140,40,0.15); color: #b8860b; }}
+  .response-form {{ display: grid; gap: 0.5rem; margin-top: 0.5rem; }}
+  .response-form textarea {{ width: 100%; font: inherit; }}
+  .response-form button.resp-submit {{ font: inherit; padding: 0.4rem 1rem;
+      background: var(--accent); color: white; border: none; border-radius: 4px; cursor: pointer; }}
+  .response-form button.resp-submit:disabled {{ opacity: 0.5; cursor: not-allowed; }}
   .toast {{ position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%);
             background: #333; color: white; padding: 0.75rem 1.25rem; border-radius: 6px;
             font-size: 0.9rem; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 100; }}
@@ -588,6 +635,43 @@ def _render(
     }}
     appStatusFilter.addEventListener('change', filterApplications);
   }}
+
+  // M4: Responses-tab paste-reply form.
+  document.querySelectorAll('[data-pane="responses"] form.response-form').forEach(form => {{
+    form.addEventListener('submit', async (ev) => {{
+      ev.preventDefault();
+      const card = form.closest('.card.response');
+      if (!card) return;
+      const appId = parseInt(card.dataset.applicationId, 10);
+      const status = form.querySelector('.resp-status').value;
+      const text = form.querySelector('.resp-text').value;
+      const submitBtn = form.querySelector('.resp-submit');
+      submitBtn.disabled = true;
+      const original = submitBtn.textContent;
+      submitBtn.textContent = 'Saving…';
+      try {{
+        const resp = await fetch('/api/applications/' + appId + '/response', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{ status: status, response_text: text }}),
+        }});
+        const data = await resp.json();
+        if (resp.ok) {{
+          window.flatpilotToast('Response saved');
+          submitBtn.textContent = 'Saved ✓';
+          setTimeout(() => {{ submitBtn.textContent = original; submitBtn.disabled = false; }}, 1500);
+        }} else {{
+          window.flatpilotToast('Save failed: ' + (data.error || resp.status), true);
+          submitBtn.textContent = original;
+          submitBtn.disabled = false;
+        }}
+      }} catch (e) {{
+        window.flatpilotToast('Network error: ' + e.message, true);
+        submitBtn.textContent = original;
+        submitBtn.disabled = false;
+      }}
+    }});
+  }});
 
   applyFilters();
 }})();

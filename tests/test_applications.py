@@ -61,3 +61,53 @@ def test_record_skip_unknown_match_id_raises(tmp_db):
 
     with pytest.raises(LookupError, match="no match with id 999"):
         record_skip(tmp_db, match_id=999, profile_hash="phash-1")
+
+
+def test_record_response_updates_row(tmp_db):
+    from flatpilot.applications import record_response
+
+    flat_id, _ = _seed_match(tmp_db)
+    cur = tmp_db.execute(
+        """
+        INSERT INTO applications (
+            flat_id, platform, listing_url, title,
+            applied_at, method, message_sent, attachments_sent_json, status
+        ) VALUES (?, 'wg-gesucht', 'https://x/1', 'T1',
+                  '2026-04-25T10:00:00+00:00', 'manual', 'msg', '[]', 'submitted')
+        """,
+        (flat_id,),
+    )
+    app_id = int(cur.lastrowid)
+
+    record_response(
+        tmp_db,
+        application_id=app_id,
+        status="viewing_invited",
+        response_text="Komm gern am Samstag um 15 Uhr",
+    )
+
+    row = tmp_db.execute(
+        "SELECT status, response_text, response_received_at FROM applications WHERE id = ?",
+        (app_id,),
+    ).fetchone()
+    assert row["status"] == "viewing_invited"
+    assert "Komm gern" in row["response_text"]
+    assert row["response_received_at"] is not None
+
+
+def test_record_response_unknown_id_raises(tmp_db):
+    from flatpilot.applications import record_response
+
+    with pytest.raises(LookupError, match="no application with id 999"):
+        record_response(
+            tmp_db, application_id=999, status="rejected", response_text=""
+        )
+
+
+def test_record_response_invalid_status_raises(tmp_db):
+    from flatpilot.applications import record_response
+
+    with pytest.raises(ValueError, match="unsupported response status"):
+        record_response(
+            tmp_db, application_id=1, status="submitted", response_text=""  # type: ignore[arg-type]
+        )

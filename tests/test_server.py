@@ -173,3 +173,80 @@ def test_post_apply_invalid_body_returns_400(tmp_db):
     assert status == 400
     payload = json.loads(body)
     assert "flat_id" in payload["error"] or "json" in payload["error"].lower()
+
+
+def _seed_application(conn) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO flats (
+            external_id, platform, listing_url, title,
+            scraped_at, first_seen_at
+        ) VALUES ('e2', 'wg-gesucht', 'https://x/2', 'T2',
+                  '2026-04-25', '2026-04-25')
+        """
+    )
+    flat_id = int(cur.lastrowid)
+    cur = conn.execute(
+        """
+        INSERT INTO applications (
+            flat_id, platform, listing_url, title,
+            applied_at, method, message_sent, attachments_sent_json, status
+        ) VALUES (?, 'wg-gesucht', 'https://x/2', 'T2',
+                  '2026-04-25T10:00:00+00:00', 'manual', 'msg', '[]', 'submitted')
+        """,
+        (flat_id,),
+    )
+    return int(cur.lastrowid)
+
+
+def test_post_response_updates_row(tmp_db):
+    _seed_match_with_profile(tmp_db)  # ensures profile exists
+    app_id = _seed_application(tmp_db)
+    payload = {"status": "viewing_invited", "response_text": "Komm am Samstag"}
+
+    with _running_server(tmp_db) as port:
+        status, body = _post(
+                f"http://127.0.0.1:{port}/api/applications/{app_id}/response",
+            body=json.dumps(payload).encode("utf-8"),
+        )
+
+    assert status == 200, body
+    data = json.loads(body)
+    assert data["ok"] is True
+
+    row = tmp_db.execute(
+        "SELECT status, response_text FROM applications WHERE id = ?", (app_id,)
+    ).fetchone()
+    assert row["status"] == "viewing_invited"
+    assert "Komm am Samstag" in row["response_text"]
+
+
+def test_post_response_invalid_status_returns_400(tmp_db):
+    _seed_match_with_profile(tmp_db)
+    app_id = _seed_application(tmp_db)
+    payload = {"status": "submitted", "response_text": ""}
+
+    with _running_server(tmp_db) as port:
+        status, body = _post(
+            f"http://127.0.0.1:{port}/api/applications/{app_id}/response",
+            body=json.dumps(payload).encode("utf-8"),
+        )
+
+    assert status == 400
+    data = json.loads(body)
+    assert "unsupported response status" in data["error"]
+
+
+def test_post_response_unknown_id_returns_404(tmp_db):
+    _seed_match_with_profile(tmp_db)
+    payload = {"status": "rejected", "response_text": ""}
+
+    with _running_server(tmp_db) as port:
+        status, body = _post(
+            f"http://127.0.0.1:{port}/api/applications/9999/response",
+            body=json.dumps(payload).encode("utf-8"),
+        )
+
+    assert status == 404
+    data = json.loads(body)
+    assert "no application with id 9999" in data["error"]

@@ -193,3 +193,22 @@ def test_applied_pane_renders_status_filter(tmp_db):
     # All five allowed status values plus "any" must be selectable.
     for value in ("any", "submitted", "failed", "viewing_invited", "rejected", "no_response"):
         assert f'value="{value}"' in html
+
+
+def test_responses_pane_renders_form_per_application(tmp_db):
+    _insert_application(tmp_db, status="submitted", applied_at="2026-04-25T10:00:00+00:00", title="ResponseFlat")  # noqa: E501
+    html = generate_html(tmp_db)
+    pane_start = html.index('data-pane="responses"')
+    pane = html[pane_start:]
+    assert "ResponseFlat" in pane
+    assert "form" in pane
+    assert "resp-status" in pane
+    assert "resp-text" in pane
+    # Status options exposed are limited to post-application transitions.
+    assert 'value="viewing_invited"' in pane
+    assert 'value="rejected"' in pane
+    assert 'value="no_response"' in pane
+    # 'submitted' / 'failed' are L4-set; the form must NOT offer them.
+    pane_form_segment = pane[pane.index("form"):pane.index("</form>")]
+    assert 'value="submitted"' not in pane_form_segment
+    assert 'value="failed"' not in pane_form_segment

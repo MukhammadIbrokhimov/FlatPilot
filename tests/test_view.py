@@ -133,3 +133,63 @@ def test_generate_html_includes_apply_and_skip_handlers(tmp_db):
     assert "/api/matches/" in html
     assert "data-flat-id" in html
     assert "data-match-id" in html
+
+
+def _insert_application(conn, *, status: str, applied_at: str, title: str = "Applied flat") -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO flats (
+            external_id, platform, listing_url, title,
+            scraped_at, first_seen_at
+        ) VALUES (?, 'wg-gesucht', 'https://x/' || ?, ?,
+                  '2026-04-25', '2026-04-25')
+        """,
+        (f"ext-{title}", title, title),
+    )
+    flat_id = int(cur.lastrowid)
+    cur = conn.execute(
+        """
+        INSERT INTO applications (
+            flat_id, platform, listing_url, title,
+            applied_at, method, message_sent, attachments_sent_json,
+            status
+        ) VALUES (?, 'wg-gesucht', 'https://x/listing', ?, ?, 'manual',
+                  'msg', '[]', ?)
+        """,
+        (flat_id, title, applied_at, status),
+    )
+    return int(cur.lastrowid)
+
+
+def test_applied_pane_renders_rows_in_applied_at_desc(tmp_db):
+    _insert_application(tmp_db, status="submitted", applied_at="2026-04-20T10:00:00+00:00", title="Older")  # noqa: E501
+    _insert_application(tmp_db, status="viewing_invited", applied_at="2026-04-25T10:00:00+00:00", title="Newest")  # noqa: E501
+    html = generate_html(tmp_db)
+
+    pane_start = html.index('data-pane="applied"')
+    pane_end = html.index('data-pane="responses"')
+    pane = html[pane_start:pane_end]
+
+    # Newest must appear before older in the pane.
+    assert pane.index("Newest") < pane.index("Older")
+
+
+def test_applied_pane_renders_status_badges(tmp_db):
+    _insert_application(tmp_db, status="submitted", applied_at="2026-04-25T10:00:00+00:00", title="A1")  # noqa: E501
+    _insert_application(tmp_db, status="failed", applied_at="2026-04-24T10:00:00+00:00", title="A2")
+    html = generate_html(tmp_db)
+
+    pane_start = html.index('data-pane="applied"')
+    pane_end = html.index('data-pane="responses"')
+    pane = html[pane_start:pane_end]
+    assert "badge-submitted" in pane
+    assert "badge-failed" in pane
+
+
+def test_applied_pane_renders_status_filter(tmp_db):
+    _insert_application(tmp_db, status="submitted", applied_at="2026-04-25T10:00:00+00:00")
+    html = generate_html(tmp_db)
+    assert 'id="f-app-status"' in html
+    # All five allowed status values plus "any" must be selectable.
+    for value in ("any", "submitted", "failed", "viewing_invited", "rejected", "no_response"):
+        assert f'value="{value}"' in html

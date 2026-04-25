@@ -31,6 +31,14 @@ from flatpilot.database import get_conn, init_db
 DASHBOARD_FILENAME = "dashboard.html"
 SESSION_WINDOW = timedelta(hours=24)
 
+_APPLICATION_STATUSES: tuple[str, ...] = (
+    "submitted",
+    "failed",
+    "viewing_invited",
+    "rejected",
+    "no_response",
+)
+
 
 def generate_html(conn: Any = None) -> str:
     """Render the full dashboard HTML against the current DB state."""
@@ -233,13 +241,67 @@ def _district_options(groups: list[list[dict[str, Any]]]) -> str:
 
 
 def _applied_pane(applications: list[dict[str, Any]]) -> str:
-    """Placeholder pane — Task 7 fills this in. Empty list shows hint."""
     if not applications:
         return (
-            '<p class="empty">No applications yet. '
-            "Apply from the Matches tab to populate this view.</p>"
+            '<p class="empty">No applications yet. Apply from the Matches '
+            "tab to populate this view.</p>"
         )
-    return '<p class="empty">Applied tab populated by M3.</p>'
+    status_options = '<option value="any">any</option>'
+    for s in _APPLICATION_STATUSES:
+        status_options += f'<option value="{s}">{escape(s.replace("_", " "))}</option>'
+
+    rows_html = "\n".join(_application_row(app) for app in applications)
+
+    return (
+        '<div class="filters">'
+        f'<label>Status <select id="f-app-status">{status_options}</select></label>'
+        "</div>"
+        f'<div class="cards">{rows_html}</div>'
+    )
+
+
+def _application_row(app: dict[str, Any]) -> str:
+    title = escape(str(app.get("title") or "Untitled listing"))
+    status = str(app.get("status") or "")
+    badge = (
+        f'<span class="badge badge-{escape(status, quote=True)}">'
+        f"{escape(status.replace('_', ' '))}</span>"
+    )
+    rent = _fmt_rent(app.get("rent_warm_eur"))
+    rooms = _fmt_rooms(app.get("rooms"))
+    district = app.get("district") or ""
+    applied_at = escape(str(app.get("applied_at") or ""))
+    listing_url = str(app.get("listing_url") or "")
+    response_at = app.get("response_received_at")
+
+    response_html = ""
+    if response_at:
+        response_html = (
+            f'<dt>Responded</dt><dd>{escape(str(response_at))}</dd>'
+        )
+
+    open_html = ""
+    if listing_url:
+        open_html = (
+            '<div class="actions">'
+            f'<a class="open" href="{escape(listing_url, quote=True)}" '
+            'target="_blank" rel="noopener noreferrer">View listing</a>'
+            "</div>"
+        )
+
+    return (
+        f'<article class="card application" data-status="{escape(status, quote=True)}">'
+        f'<h3>{title} {badge}</h3>'
+        f'<dl>'
+        f'<dt>Applied</dt><dd>{applied_at}</dd>'
+        f"<dt>Warmmiete</dt><dd>{escape(rent)}</dd>"
+        f"<dt>Rooms</dt><dd>{escape(rooms)}</dd>"
+        + (f"<dt>District</dt><dd>{escape(district)}</dd>" if district else "")
+        + response_html
+        + "</dl>"
+        + open_html
+        + "</article>"
+    )
 
 
 def _responses_pane(applications: list[dict[str, Any]]) -> str:
@@ -513,6 +575,19 @@ def _render(
       }}
     }});
   }});
+
+  // M3: Applied-tab status filter.
+  const appStatusFilter = document.getElementById('f-app-status');
+  if (appStatusFilter) {{
+    function filterApplications() {{
+      const want = appStatusFilter.value;
+      document.querySelectorAll('[data-pane="applied"] .card.application').forEach(card => {{
+        const s = card.dataset.status;
+        card.style.display = (want === 'any' || s === want) ? '' : 'none';
+      }});
+    }}
+    appStatusFilter.addEventListener('change', filterApplications);
+  }}
 
   applyFilters();
 }})();

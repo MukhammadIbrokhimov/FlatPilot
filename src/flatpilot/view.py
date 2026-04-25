@@ -146,6 +146,7 @@ def _card(item: dict[str, Any]) -> str:
     url = str(item.get("listing_url") or "")
     flat_id = item.get("flat_id") or item.get("id") or ""
     match_id = item.get("match_id") or ""
+    decision = item.get("decision") or ""
 
     posted = item.get("online_since") or ""
     decided = item.get("decided_at") or ""
@@ -162,18 +163,24 @@ def _card(item: dict[str, Any]) -> str:
             + "</p>"
         )
 
-    # Action buttons. Apply / Skip wired to fetch() handlers in JS;
-    # View is a plain link. Skip is hidden if this isn't a match row
-    # (the tab only renders match rows today, but the guard is cheap).
+    # Apply / Skip render only on actual match rows. Rejected cards in
+    # the Matches pane keep View / Copy so the user can still inspect
+    # them, but applying to a flat the matcher already declined is not
+    # a supported flow.
     actions_html = ""
     if url:
+        action_buttons = ""
+        if decision == "match":
+            action_buttons = (
+                f'<button class="apply" type="button" '
+                f'data-flat-id="{escape(str(flat_id), quote=True)}">Apply</button>'
+                f'<button class="skip" type="button" '
+                f'data-match-id="{escape(str(match_id), quote=True)}">Skip</button>'
+            )
         actions_html = (
             '<div class="actions">'
-            f'<button class="apply" type="button" '
-            f'data-flat-id="{escape(str(flat_id), quote=True)}">Apply</button>'
-            f'<button class="skip" type="button" '
-            f'data-match-id="{escape(str(match_id), quote=True)}">Skip</button>'
-            f'<a class="open" href="{escape(url, quote=True)}" '
+            + action_buttons
+            + f'<a class="open" href="{escape(url, quote=True)}" '
             'target="_blank" rel="noopener noreferrer">View</a>'
             f'<button class="copy" type="button" '
             f'data-url="{escape(url, quote=True)}">Copy link</button>'
@@ -264,7 +271,7 @@ def _render(
 <title>FlatPilot dashboard</title>
 <style>
   :root {{ color-scheme: light dark; --accent: #2b7cff; }}
-  body {{ font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 1.5rem; max-width: 1100px; margin: 0 auto; }}
+  body {{ font: 16px/1.5 system-ui, sans-serif; padding: 1.5rem; max-width: 1100px; margin: 0 auto; }}
   header p {{ color: #666; margin: 0.2rem 0 1rem; }}
   nav.tabs {{ display: flex; gap: 0.25rem; margin-bottom: 1rem; border-bottom: 1px solid rgba(128,128,128,0.3); }}
   nav.tabs button {{ font: inherit; padding: 0.5rem 1rem; border: none; background: transparent;

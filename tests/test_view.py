@@ -47,14 +47,14 @@ def _insert_match(conn) -> None:
 
 
 def test_generate_html_includes_three_tab_buttons(tmp_db):
-    html = generate_html()
+    html = generate_html(tmp_db)
     assert 'data-tab="matches"' in html
     assert 'data-tab="applied"' in html
     assert 'data-tab="responses"' in html
 
 
 def test_generate_html_includes_three_panes(tmp_db):
-    html = generate_html()
+    html = generate_html(tmp_db)
     assert 'data-pane="matches"' in html
     assert 'data-pane="applied"' in html
     assert 'data-pane="responses"' in html
@@ -62,12 +62,12 @@ def test_generate_html_includes_three_panes(tmp_db):
 
 def test_generate_html_matches_pane_renders_match_card(tmp_db):
     _insert_match(tmp_db)
-    html = generate_html()
+    html = generate_html(tmp_db)
     assert "View test flat" in html
 
 
 def test_generate_html_status_badge_css_classes_present(tmp_db):
-    html = generate_html()
+    html = generate_html(tmp_db)
     # Badges use a status-prefix convention so M3 can drop the spans in
     # without re-touching CSS.
     assert ".badge-submitted" in html
@@ -75,6 +75,46 @@ def test_generate_html_status_badge_css_classes_present(tmp_db):
     assert ".badge-viewing_invited" in html
     assert ".badge-rejected" in html
     assert ".badge-no_response" in html
+
+
+def test_skipped_flat_hidden_from_matches_pane(tmp_db):
+    """A 'skipped' matches row for the same flat hides the 'match' row."""
+    now = datetime.now(UTC).isoformat()
+    cur = tmp_db.execute(
+        """
+        INSERT INTO flats (
+            external_id, platform, listing_url, title,
+            scraped_at, first_seen_at, requires_wbs
+        ) VALUES ('ext-skip', 'wg-gesucht', 'https://x/skip',
+                  'Skipped flat title', ?, ?, 0)
+        """,
+        (now, now),
+    )
+    flat_id = cur.lastrowid
+    tmp_db.execute(
+        """
+        INSERT INTO matches (
+            flat_id, profile_version_hash, decision,
+            decision_reasons_json, decided_at
+        ) VALUES (?, 'h1', 'match', '[]', ?)
+        """,
+        (flat_id, now),
+    )
+    tmp_db.execute(
+        """
+        INSERT INTO matches (
+            flat_id, profile_version_hash, decision,
+            decision_reasons_json, decided_at
+        ) VALUES (?, 'h1', 'skipped', '[]', ?)
+        """,
+        (flat_id, now),
+    )
+
+    html = generate_html(tmp_db)
+    matches_start = html.index('data-pane="matches"')
+    matches_end = html.index('data-pane="applied"')
+    matches_pane = html[matches_start:matches_end]
+    assert "Skipped flat title" not in matches_pane
 
 
 def test_generate_returns_path_and_writes_file(tmp_db):

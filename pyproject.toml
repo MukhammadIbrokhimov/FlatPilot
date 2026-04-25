@@ -59,6 +59,12 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
 
+[tool.ruff.lint.per-file-ignores]
+# view.py renders the entire dashboard HTML/CSS/JS as one f-string
+# template; CSS rules naturally exceed 100 chars. Inline noqa is
+# noisier than tolerating long lines in this single template file.
+"src/flatpilot/view.py" = ["E501"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"

@@ -2,7 +2,7 @@
 
 Each filler is a class that sets a ``platform`` ClassVar, registers
 itself through :func:`flatpilot.fillers.register`, and implements
-:meth:`Filler.fill_dry_run`. The L4 apply command will iterate the
+:meth:`Filler.fill`. The L4 apply command will iterate the
 registry by ``platform`` to drive each platform's filler — same shape
 as :mod:`flatpilot.scrapers.base`.
 
@@ -10,8 +10,8 @@ as :mod:`flatpilot.scrapers.base`.
 ``applications`` row (see :data:`flatpilot.schemas.APPLICATIONS_CREATE_SQL`)
 without a second round of data marshaling: the rendered ``message_sent``
 goes into the message column, ``attachments_sent`` is JSON-serialized to
-the attachments column, ``submitted=False`` (always, in dry-run) maps to
-the row's ``status``.
+the attachments column, and ``submitted`` decides whether L4 records a
+``status='submitted'`` or ``'failed'`` row.
 """
 
 from __future__ import annotations
@@ -44,9 +44,19 @@ class NotAuthenticatedError(FillError):
     """
 
 
+class SubmitVerificationError(FillError):
+    """Submit click landed but verification (URL change, banner check) failed.
+
+    Distinct from :class:`SelectorMissingError` (the button itself is gone)
+    and :class:`FormNotFoundError` (we never reached the form). Used when
+    the click happened but the platform appears to have rejected the
+    message — the form URL didn't change, an inline error rendered, etc.
+    """
+
+
 @dataclass
 class FillReport:
-    """Outcome of a :meth:`Filler.fill_dry_run` call.
+    """Outcome of a :meth:`Filler.fill` call.
 
     Field semantics:
 
@@ -60,10 +70,10 @@ class FillReport:
     - ``attachments_sent``: the absolute paths that were attached. L4
       JSON-serializes these into ``applications.attachments_sent_json``.
     - ``screenshot_path``: optional path to a PNG capturing the filled
-      (un-submitted) form. Useful for the ``apply --dry-run`` UX so the
-      user can eyeball what would be sent.
-    - ``submitted``: always ``False`` in dry-run; reserved for the
-      future live-submit path that will land alongside L4.
+      form (post-submit if ``submitted`` is True, pre-submit otherwise).
+    - ``submitted``: ``True`` only after the platform's submit button was
+      clicked AND the post-submit verification passed. ``False`` for any
+      ``fill(submit=False)`` call.
     """
 
     platform: str
@@ -83,19 +93,29 @@ class Filler(Protocol):
 
     platform: ClassVar[str]
 
-    def fill_dry_run(
+    def fill(
         self,
         listing_url: str,
         message: str,
         attachments: list[Path],
+        *,
+        submit: bool,
         screenshot_dir: Path | None = None,
     ) -> FillReport:
-        """Navigate to ``listing_url``, open the contact form, fill it, stop.
+        """Navigate to ``listing_url``, open the contact form, fill it.
 
-        Implementations MUST NOT click submit and MUST NOT attempt to
-        log in. Failures should raise the most specific error class
-        available — :class:`NotAuthenticatedError` when the page
-        redirects to login, :class:`FormNotFoundError` when the contact
-        CTA / form can't be located, :class:`SelectorMissingError` when
-        a specific named field selector returns zero matches.
+        If ``submit`` is True, click the platform's submit button and
+        verify the form was actually sent (typically by asserting the
+        page navigated away from the form URL). If ``submit`` is False,
+        stop at the filled-but-unsent form and return — useful for
+        previews.
+
+        Implementations MUST NOT attempt to log in. Failures should
+        raise the most specific error class available —
+        :class:`NotAuthenticatedError` when the page redirects to login,
+        :class:`FormNotFoundError` when the contact CTA / form can't be
+        located, :class:`SelectorMissingError` when a specific named
+        field selector returns zero matches. Submit-time failures
+        (button missing, page didn't navigate, error banner present)
+        raise :class:`FillError`.
         """

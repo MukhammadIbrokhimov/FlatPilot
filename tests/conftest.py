@@ -32,6 +32,21 @@ def tmp_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(config, "TEMPLATES_DIR", app_dir / "templates")
     monkeypatch.setattr(database, "DB_PATH", db_path)
 
+    # compose.py and attachments.py bind their path references at import time
+    # via ``from flatpilot.config import …``. Patch those sub-module names too
+    # so tests that write templates/attachments under tmp_path are found.
+    from flatpilot import attachments as _attachments
+    from flatpilot import compose as _compose
+
+    monkeypatch.setattr(_attachments, "ATTACHMENTS_DIR", app_dir / "attachments")
+    monkeypatch.setattr(_compose, "TEMPLATES_DIR", app_dir / "templates")
+
+    # profile.py also binds PROFILE_PATH at import time.
+    from flatpilot import profile as _profile
+
+    monkeypatch.setattr(_profile, "PROFILE_PATH", app_dir / "profile.json")
+    monkeypatch.setattr(config, "PROFILE_PATH", app_dir / "profile.json")
+
     database.close_conn()
     database.init_db()
     conn = database.get_conn()

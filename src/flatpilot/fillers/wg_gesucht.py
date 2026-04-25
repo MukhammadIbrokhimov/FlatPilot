@@ -1,11 +1,12 @@
-"""WG-Gesucht contact-form filler (dry-run only).
+"""WG-Gesucht contact-form filler.
 
 Navigates to a listing URL using the same polite Playwright session that
 the scraper uses (so cookies, consent banner and fingerprint are
 shared), follows the listing's "Nachricht senden" link to the
 ``/nachricht-senden/<slug>`` contact page, fills the message body and
-attaches files, then stops short of clicking submit. The actual submit
-path will land with FlatPilot-cjtz (L4 apply command).
+attaches files. With ``submit=True`` it then clicks the form's submit
+button and verifies the page navigated away from the form URL; with
+``submit=False`` it stops at the filled form for preview / screenshot.
 
 Selectors were verified empirically in FlatPilot-fze against the live
 "messenger" form WG-Gesucht ships today (2026-04-22): both a
@@ -14,7 +15,7 @@ render the same ``form#messenger_form`` with a single
 ``textarea#message_input`` (``name="content"``) and a hidden
 ``input#file_input``. The current form has no subject field; if
 WG-Gesucht adds one back, thread a subject param through
-:meth:`fill_dry_run` at that point.
+:meth:`fill` at that point.
 
 Why extract-href-and-goto over clicking the CTA: WG-Gesucht renders
 three responsive copies of the "Nachricht senden" anchor (xs / sm / md
@@ -27,18 +28,23 @@ href is whatever URL scheme WG-Gesucht ships today.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
 from flatpilot.fillers import register
 from flatpilot.fillers.base import (
+    FillError,  # noqa: F401 — re-exported for callers that catch the base class
     FillReport,
     FormNotFoundError,
     NotAuthenticatedError,
     SelectorMissingError,
+    SubmitVerificationError,
 )
 from flatpilot.scrapers.session import (
     DEFAULT_USER_AGENT,
@@ -71,6 +77,13 @@ class _Selectors:
         "input#file_input, "
         "input[type='file']"
     )
+    # Both <button type=submit> and <input type=submit> are valid; we
+    # match either inside the messenger form so a future React rewrite
+    # that swaps the element type still hits.
+    submit_button: str = (
+        "form#messenger_form button[type='submit'], "
+        "form#messenger_form input[type='submit']"
+    )
 
 
 SELECTORS = _Selectors()
@@ -84,6 +97,8 @@ LOGIN_URL_FRAGMENTS: tuple[str, ...] = (
     "/sign-in",
 )
 
+FORM_URL_SEGMENT = "/nachricht-senden/"
+SUBMIT_NAV_WAIT_MS = 5_000
 FORM_WAIT_MS = 5_000
 FIELD_WAIT_MS = 3_000
 
@@ -93,11 +108,13 @@ class WGGesuchtFiller:
     platform: ClassVar[str] = "wg-gesucht"
     user_agent: ClassVar[str] = DEFAULT_USER_AGENT
 
-    def fill_dry_run(
+    def fill(
         self,
         listing_url: str,
         message: str,
         attachments: list[Path],
+        *,
+        submit: bool,
         screenshot_dir: Path | None = None,
     ) -> FillReport:
         if not message.strip():
@@ -143,6 +160,28 @@ class WGGesuchtFiller:
                 file_input.set_input_files([str(p) for p in attachments])
                 fields_filled["attachments"] = ", ".join(p.name for p in attachments)
 
+            submitted = False
+            if submit:
+                submit_btn = pg.locator(SELECTORS.submit_button).first
+                if submit_btn.count() == 0:
+                    raise SelectorMissingError(
+                        f"{self.platform}: no submit button matching "
+                        f"{SELECTORS.submit_button!r} on {contact_url}"
+                    )
+                submit_btn.click()
+                # Give the page a moment to navigate. WG-Gesucht's
+                # messenger redirects to /nachrichten/<thread> on
+                # success; on validation failure it stays on the form
+                # URL and renders an inline error banner.
+                with contextlib.suppress(PlaywrightTimeoutError):
+                    pg.wait_for_load_state("networkidle", timeout=SUBMIT_NAV_WAIT_MS)
+                if FORM_URL_SEGMENT in (pg.url or ""):
+                    raise SubmitVerificationError(
+                        f"{self.platform}: submit did not navigate away from the "
+                        f"form URL ({pg.url}) — message likely rejected by validation"
+                    )
+                submitted = True
+
             screenshot_path = self._maybe_screenshot(pg, screenshot_dir, listing_url)
 
         return FillReport(
@@ -153,7 +192,7 @@ class WGGesuchtFiller:
             message_sent=message,
             attachments_sent=list(attachments),
             screenshot_path=screenshot_path,
-            submitted=False,
+            submitted=submitted,
             started_at=started,
             finished_at=datetime.now(UTC).isoformat(),
         )

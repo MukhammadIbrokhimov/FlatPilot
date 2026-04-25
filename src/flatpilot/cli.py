@@ -10,9 +10,20 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC
+from pathlib import Path
 
 import typer
 from rich import print as rprint
+
+from flatpilot.apply import (
+    AlreadyAppliedError,
+    ApplyOutcome,
+    ProfileMissingError,
+    apply_to_flat,
+)
+from flatpilot.attachments import AttachmentError
+from flatpilot.compose import TemplateError
+from flatpilot.fillers.base import FillError
 
 app = typer.Typer(
     name="flatpilot",
@@ -513,18 +524,98 @@ def status() -> None:
 
 
 @app.command()
-def dashboard() -> None:
-    """Build the HTML dashboard of matches."""
+def apply(
+    flat_id: int = typer.Argument(..., help="Database ID of the flat to apply to."),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Fill the contact form but DO NOT click submit. Prints a preview "
+        "and writes no applications row.",
+    ),
+    screenshot_dir: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--screenshot-dir",
+        help="If set, save a PNG of the filled form to this directory.",
+    ),
+) -> None:
+    """Contact the landlord for a single flat via its platform's filler.
+
+    On success a row is written to the ``applications`` table with
+    ``status='submitted'``. On filler error a row is written with
+    ``status='failed'`` and the error in ``notes``. ``--dry-run`` skips
+    the submit click and writes no row.
+    """
+    from rich.console import Console
+
+    console = Console()
+    try:
+        outcome: ApplyOutcome = apply_to_flat(
+            flat_id, dry_run=dry_run, screenshot_dir=screenshot_dir
+        )
+    except ProfileMissingError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    except LookupError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from exc
+    except AlreadyAppliedError as exc:
+        console.print(f"[yellow]{exc}[/yellow]")
+        raise typer.Exit(1) from exc
+    except (FillError, AttachmentError, TemplateError) as exc:
+        console.print(f"[red]{type(exc).__name__}: {exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    report = outcome.fill_report
+    if outcome.status == "dry_run":
+        console.print("[yellow]dry-run preview[/yellow] (no applications row written)")
+        if report is not None:
+            console.print(f"  contact URL: {report.contact_url}")
+            for field, value in report.fields_filled.items():
+                preview = value if len(value) <= 200 else value[:197] + "..."
+                console.print(f"  {field}: {preview}")
+            if report.screenshot_path is not None:
+                console.print(f"  screenshot: {report.screenshot_path}")
+        return
+
+    # The remaining valid status is "submitted"; ApplyStatus narrows the type.
+    console.print(
+        f"[green]submitted[/green] · application_id={outcome.application_id}"
+    )
+
+
+@app.command()
+def dashboard(
+    port: int = typer.Option(
+        8765,
+        "--port",
+        help="Localhost port to bind. Falls back to an ephemeral port if busy.",
+    ),
+    no_browser: bool = typer.Option(
+        False,
+        "--no-browser",
+        help="Don't open the dashboard in a browser tab on startup.",
+    ),
+) -> None:
+    """Serve the HTML dashboard over localhost until interrupted (Ctrl-C)."""
     import webbrowser
 
     from rich.console import Console
 
-    from flatpilot.view import generate
+    from flatpilot.server import serve
 
     console = Console()
-    path = generate()
-    console.print(f"Dashboard written to [bold]{path}[/bold]")
-    webbrowser.open(path.as_uri())
+    server, bound_port = serve(host="127.0.0.1", port=port)
+    url = f"http://127.0.0.1:{bound_port}/"
+    console.print(f"FlatPilot dashboard serving at [bold]{url}[/bold]  (Ctrl-C to stop)")
+    if not no_browser:
+        webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        console.print("\n[yellow]stopping dashboard server[/yellow]")
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 if __name__ == "__main__":

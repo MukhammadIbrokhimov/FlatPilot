@@ -1,9 +1,9 @@
 """Form-filler framework and per-platform implementations.
 
 L4 (``flatpilot apply <flat_id>``) calls :func:`get_filler` with the
-flat's ``platform`` and invokes :meth:`Filler.fill_dry_run` to navigate
-to the contact form, fill fields, attach files and stop short of
-submitting. Selectors that target real DOM elements live in each
+flat's ``platform`` and invokes :meth:`Filler.fill` to navigate to the
+contact form, fill fields, attach files, and (when ``submit=True``)
+click submit. Selectors that target real DOM elements live in each
 platform module; this package's job is the registry, identical in
 shape to :mod:`flatpilot.scrapers`.
 """
@@ -19,6 +19,7 @@ from flatpilot.fillers.base import (
     FormNotFoundError,
     NotAuthenticatedError,
     SelectorMissingError,
+    SubmitVerificationError,
 )
 
 _REGISTRY: dict[str, type[Filler]] = {}
@@ -62,6 +63,7 @@ __all__ = [
     "FormNotFoundError",
     "NotAuthenticatedError",
     "SelectorMissingError",
+    "SubmitVerificationError",
     "all_fillers",
     "get_filler",
     "register",

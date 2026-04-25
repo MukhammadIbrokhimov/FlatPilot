@@ -576,18 +576,38 @@ def apply(
 
 
 @app.command()
-def dashboard() -> None:
-    """Build the HTML dashboard of matches."""
+def dashboard(
+    port: int = typer.Option(
+        8765,
+        "--port",
+        help="Localhost port to bind. Falls back to an ephemeral port if busy.",
+    ),
+    no_browser: bool = typer.Option(
+        False,
+        "--no-browser",
+        help="Don't open the dashboard in a browser tab on startup.",
+    ),
+) -> None:
+    """Serve the HTML dashboard over localhost until interrupted (Ctrl-C)."""
     import webbrowser
 
     from rich.console import Console
 
-    from flatpilot.view import generate
+    from flatpilot.server import serve
 
     console = Console()
-    path = generate()
-    console.print(f"Dashboard written to [bold]{path}[/bold]")
-    webbrowser.open(path.as_uri())
+    server, bound_port = serve(host="127.0.0.1", port=port)
+    url = f"http://127.0.0.1:{bound_port}/"
+    console.print(f"FlatPilot dashboard serving at [bold]{url}[/bold]  (Ctrl-C to stop)")
+    if not no_browser:
+        webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        console.print("\n[yellow]stopping dashboard server[/yellow]")
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 if __name__ == "__main__":

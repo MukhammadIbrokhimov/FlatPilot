@@ -28,6 +28,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import subprocess
+import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -45,6 +47,31 @@ logger = logging.getLogger(__name__)
 DEFAULT_PORT = 8765
 
 _SKIP_RE = re.compile(r"^/api/matches/(\d+)/skip$")
+_APPLY_PATH = "/api/applications"
+
+
+def _spawn_apply(flat_id: int) -> dict:
+    """Run ``flatpilot apply <flat_id>`` as a subprocess.
+
+    Captures stdout/stderr; returns a small dict the handler can ship to
+    the browser. Stdout is tail-trimmed to ~2 KB so a verbose Playwright
+    log doesn't bloat the JSON response.
+
+    Patched in tests so we don't actually invoke the CLI.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-m", "flatpilot", "apply", str(flat_id)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    combined = (proc.stdout or "") + (proc.stderr or "")
+    tail = combined[-2000:].strip()
+    return {
+        "ok": proc.returncode == 0,
+        "returncode": proc.returncode,
+        "stdout_tail": tail,
+    }
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -68,7 +95,46 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if skip_match:
             self._handle_skip(int(skip_match.group(1)))
             return
+        if path == _APPLY_PATH:
+            self._handle_apply()
+            return
         self._send(HTTPStatus.NOT_FOUND, f"not found: {self.path}\n")
+
+    def _handle_apply(self) -> None:
+        body = self._read_json_body()
+        if body is None:
+            return  # _read_json_body already responded.
+        flat_id = body.get("flat_id")
+        if not isinstance(flat_id, int):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "request body must be {'flat_id': <int>}"},
+            )
+            return
+        result = _spawn_apply(flat_id)
+        status = HTTPStatus.OK if result["ok"] else HTTPStatus.INTERNAL_SERVER_ERROR
+        self._send_json(status, result)
+
+    def _read_json_body(self) -> dict | None:
+        length = int(self.headers.get("Content-Length") or "0")
+        if length <= 0:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST, {"error": "empty body, expected JSON"}
+            )
+            return None
+        raw = self.rfile.read(length)
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": f"invalid JSON: {exc}"},
+            )
+            return None
+        if not isinstance(data, dict):
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "JSON body must be an object"})
+            return None
+        return data
 
     def _handle_skip(self, match_id: int) -> None:
         profile = load_profile()

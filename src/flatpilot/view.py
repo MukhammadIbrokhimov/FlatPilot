@@ -458,6 +458,62 @@ def _render(
     }});
   }});
 
+  // M2: Apply / Skip buttons in the Matches pane.
+  document.querySelectorAll('[data-pane="matches"] .actions button.apply').forEach(btn => {{
+    btn.addEventListener('click', async () => {{
+      const flatId = parseInt(btn.dataset.flatId, 10);
+      if (!flatId) return;
+      btn.disabled = true;
+      const originalText = btn.textContent;
+      btn.textContent = 'Applying…';
+      try {{
+        const resp = await fetch('/api/applications', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{ flat_id: flatId }}),
+        }});
+        const data = await resp.json();
+        if (resp.ok && data.ok) {{
+          window.flatpilotToast('Applied: ' + (data.stdout_tail || 'ok'));
+          btn.textContent = 'Applied ✓';
+        }} else {{
+          const msg = data.stdout_tail || data.error || resp.status;
+          window.flatpilotToast('Apply failed: ' + msg, true);
+          btn.textContent = originalText;
+          btn.disabled = false;
+        }}
+      }} catch (e) {{
+        window.flatpilotToast('Network error: ' + e.message, true);
+        btn.textContent = originalText;
+        btn.disabled = false;
+      }}
+    }});
+  }});
+
+  document.querySelectorAll('[data-pane="matches"] .actions button.skip').forEach(btn => {{
+    btn.addEventListener('click', async () => {{
+      const matchId = parseInt(btn.dataset.matchId, 10);
+      if (!matchId) return;
+      btn.disabled = true;
+      try {{
+        const resp = await fetch('/api/matches/' + matchId + '/skip', {{ method: 'POST' }});
+        const data = await resp.json();
+        if (resp.ok) {{
+          // Hide the card so the user has visual confirmation.
+          const card = btn.closest('.card');
+          if (card) card.style.display = 'none';
+          window.flatpilotToast('Skipped');
+        }} else {{
+          window.flatpilotToast('Skip failed: ' + (data.error || resp.status), true);
+          btn.disabled = false;
+        }}
+      }} catch (e) {{
+        window.flatpilotToast('Network error: ' + e.message, true);
+        btn.disabled = false;
+      }}
+    }});
+  }});
+
   applyFilters();
 }})();
 </script>

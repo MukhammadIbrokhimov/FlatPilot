@@ -11,6 +11,7 @@ import threading
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
+from unittest.mock import patch
 
 import pytest
 
@@ -116,3 +117,59 @@ def test_post_skip_unknown_match_id_returns_404(tmp_db):
     assert status == 404
     payload = json.loads(body)
     assert "no match with id 999" in payload["error"]
+
+
+def test_post_apply_spawns_subprocess_and_returns_result(tmp_db):
+    _seed_match_with_profile(tmp_db)
+    fake_result = {"ok": True, "stdout_tail": "submitted · application_id=7", "returncode": 0}
+
+    with (
+        _running_server(tmp_db) as port,
+        patch("flatpilot.server._spawn_apply", return_value=fake_result) as spawn,
+    ):
+        status, body = _post(
+            f"http://127.0.0.1:{port}/api/applications",
+            body=json.dumps({"flat_id": 1}).encode("utf-8"),
+        )
+
+    assert status == 200
+    spawn.assert_called_once_with(1)
+    payload = json.loads(body)
+    assert payload["ok"] is True
+    assert "application_id=7" in payload["stdout_tail"]
+
+
+def test_post_apply_subprocess_failure_returns_500(tmp_db):
+    _seed_match_with_profile(tmp_db)
+    fake_result = {
+        "ok": False,
+        "stdout_tail": "NotAuthenticatedError: session expired",
+        "returncode": 1,
+    }
+
+    with (
+        _running_server(tmp_db) as port,
+        patch("flatpilot.server._spawn_apply", return_value=fake_result),
+    ):
+        status, body = _post(
+            f"http://127.0.0.1:{port}/api/applications",
+            body=json.dumps({"flat_id": 1}).encode("utf-8"),
+        )
+
+    assert status == 500
+    payload = json.loads(body)
+    assert payload["ok"] is False
+    assert "session expired" in payload["stdout_tail"]
+
+
+def test_post_apply_invalid_body_returns_400(tmp_db):
+    _seed_match_with_profile(tmp_db)
+    with _running_server(tmp_db) as port:
+        status, body = _post(
+            f"http://127.0.0.1:{port}/api/applications",
+            body=b"not-json",
+        )
+
+    assert status == 400
+    payload = json.loads(body)
+    assert "flat_id" in payload["error"] or "json" in payload["error"].lower()

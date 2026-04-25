@@ -123,3 +123,13 @@ def test_generate_returns_path_and_writes_file(tmp_db):
     path = generate()
     assert path.exists()
     assert "data-tab=\"matches\"" in path.read_text(encoding="utf-8")
+
+
+def test_generate_html_includes_apply_and_skip_handlers(tmp_db):
+    _insert_match(tmp_db)
+    html = generate_html(tmp_db)
+    # Both fetch() targets must be present in the inline script.
+    assert "/api/applications" in html
+    assert "/api/matches/" in html
+    assert "data-flat-id" in html
+    assert "data-match-id" in html

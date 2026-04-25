@@ -19,6 +19,7 @@ from flatpilot.fillers.base import (
     FormNotFoundError,
     NotAuthenticatedError,
     SelectorMissingError,
+    SubmitVerificationError,
 )
 
 _REGISTRY: dict[str, type[Filler]] = {}
@@ -62,6 +63,7 @@ __all__ = [
     "FormNotFoundError",
     "NotAuthenticatedError",
     "SelectorMissingError",
+    "SubmitVerificationError",
     "all_fillers",
     "get_filler",
     "register",

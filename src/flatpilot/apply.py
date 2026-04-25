@@ -46,6 +46,17 @@ class ProfileMissingError(RuntimeError):
     """Raised when ``apply_to_flat`` runs before ``flatpilot init``."""
 
 
+class AlreadyAppliedError(RuntimeError):
+    """Raised when a flat already has a successful submitted application.
+
+    The schema allows multiple ``applications`` rows per flat (so a failed
+    submit followed by a retry both leave a trail), but two ``status='submitted'``
+    rows mean we sent the landlord two messages — almost always a mistake.
+    The CLI / dashboard surfaces this as a user-correctable error so a
+    double-click or two open dashboards can't accidentally double-submit.
+    """
+
+
 ApplyStatus = Literal["submitted", "dry_run"]
 
 
@@ -109,6 +120,16 @@ def apply_to_flat(
             status="dry_run",
             application_id=None,
             fill_report=report,
+        )
+
+    existing = conn.execute(
+        "SELECT id FROM applications WHERE flat_id = ? AND status = 'submitted' LIMIT 1",
+        (flat_id,),
+    ).fetchone()
+    if existing is not None:
+        raise AlreadyAppliedError(
+            f"flat {flat_id} already has a submitted application "
+            f"(application_id={existing['id']}); refusing to double-submit"
         )
 
     try:

@@ -146,6 +146,41 @@ def test_apply_live_writes_submitted_row(tmp_db, tmp_path, monkeypatch):
     assert "schufa.pdf" in row["attachments_sent_json"]
 
 
+def test_apply_refuses_double_submit_when_submitted_row_exists(tmp_db, tmp_path, monkeypatch):
+    from flatpilot.apply import AlreadyAppliedError
+
+    _profile_for_test(tmp_path)
+    _write_template(tmp_path)
+    flat_id = _insert_flat(tmp_db)
+    _stub_filler(monkeypatch, submitted=True)
+
+    # First apply lands a submitted row.
+    apply_to_flat(flat_id, dry_run=False)
+
+    # Second apply must refuse and not write a second row.
+    with pytest.raises(AlreadyAppliedError, match=f"flat {flat_id} already has"):
+        apply_to_flat(flat_id, dry_run=False)
+
+    cnt = tmp_db.execute(
+        "SELECT COUNT(*) FROM applications WHERE flat_id = ? AND status = 'submitted'",
+        (flat_id,),
+    ).fetchone()[0]
+    assert cnt == 1
+
+
+def test_apply_dry_run_after_submitted_row_still_allowed(tmp_db, tmp_path, monkeypatch):
+    """Dry-run after a real submit is fine — doesn't write a row anyway."""
+    _profile_for_test(tmp_path)
+    _write_template(tmp_path)
+    flat_id = _insert_flat(tmp_db)
+    _stub_filler(monkeypatch, submitted=True)
+
+    apply_to_flat(flat_id, dry_run=False)
+    # Dry-run path skips the idempotency check.
+    outcome = apply_to_flat(flat_id, dry_run=True)
+    assert outcome.status == "dry_run"
+
+
 def test_apply_live_filler_failure_writes_failed_row_and_raises(tmp_db, tmp_path, monkeypatch):
     _profile_for_test(tmp_path)
     _write_template(tmp_path)

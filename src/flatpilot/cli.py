@@ -15,7 +15,12 @@ from pathlib import Path
 import typer
 from rich import print as rprint
 
-from flatpilot.apply import ApplyOutcome, ProfileMissingError, apply_to_flat
+from flatpilot.apply import (
+    AlreadyAppliedError,
+    ApplyOutcome,
+    ProfileMissingError,
+    apply_to_flat,
+)
 from flatpilot.attachments import AttachmentError
 from flatpilot.compose import TemplateError
 from flatpilot.fillers.base import FillError
@@ -553,6 +558,9 @@ def apply(
     except LookupError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(2) from exc
+    except AlreadyAppliedError as exc:
+        console.print(f"[yellow]{exc}[/yellow]")
+        raise typer.Exit(1) from exc
     except (FillError, AttachmentError, TemplateError) as exc:
         console.print(f"[red]{type(exc).__name__}: {exc}[/red]")
         raise typer.Exit(1) from exc

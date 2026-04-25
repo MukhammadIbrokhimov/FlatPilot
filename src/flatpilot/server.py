@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse
 
 # Eagerly populate registries the request handlers will need.
 import flatpilot.fillers.wg_gesucht  # noqa: F401
@@ -47,7 +48,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         logger.info("%s - %s", self.address_string(), fmt % args)
 
     def do_GET(self) -> None:
-        if self.path == "/" or self.path == "":
+        path = urlparse(self.path).path
+        if path in ("/", ""):
             html = generate_html()
             self._send(HTTPStatus.OK, html, content_type="text/html; charset=utf-8")
             return

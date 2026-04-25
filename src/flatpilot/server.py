@@ -25,7 +25,9 @@ server thread doesn't block on Playwright.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -33,11 +35,16 @@ from urllib.parse import urlparse
 # Eagerly populate registries the request handlers will need.
 import flatpilot.fillers.wg_gesucht  # noqa: F401
 import flatpilot.schemas  # noqa: F401
+from flatpilot.applications import record_response, record_skip  # noqa: F401
+from flatpilot.database import get_conn, init_db
+from flatpilot.profile import load_profile, profile_hash
 from flatpilot.view import generate_html
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_PORT = 8765
+
+_SKIP_RE = re.compile(r"^/api/matches/(\d+)/skip$")
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -55,9 +62,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._send(HTTPStatus.NOT_FOUND, f"not found: {self.path}\n")
 
-    # POST endpoints land in Tasks 6 / 7 / 9.
     def do_POST(self) -> None:
+        path = urlparse(self.path).path
+        skip_match = _SKIP_RE.match(path)
+        if skip_match:
+            self._handle_skip(int(skip_match.group(1)))
+            return
         self._send(HTTPStatus.NOT_FOUND, f"not found: {self.path}\n")
+
+    def _handle_skip(self, match_id: int) -> None:
+        profile = load_profile()
+        if profile is None:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "no profile — run `flatpilot init` first"},
+            )
+            return
+        init_db()
+        conn = get_conn()
+        try:
+            record_skip(conn, match_id=match_id, profile_hash=profile_hash(profile))
+        except LookupError as exc:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": str(exc)})
+            return
+        self._send_json(HTTPStatus.OK, {"ok": True, "match_id": match_id})
+
+    def _send_json(self, status: HTTPStatus, body: dict) -> None:
+        payload = json.dumps(body)
+        self._send(status, payload, content_type="application/json; charset=utf-8")
 
     def _send(
         self,

@@ -64,7 +64,6 @@ class ApplyOutcome:
     status: ApplyStatus
     application_id: int | None
     fill_report: FillReport | None
-    error: str | None = None
 
 
 def apply_to_flat(

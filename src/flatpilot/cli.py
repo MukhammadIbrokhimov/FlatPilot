@@ -16,6 +16,9 @@ import typer
 from rich import print as rprint
 
 from flatpilot.apply import ApplyOutcome, ProfileMissingError, apply_to_flat
+from flatpilot.attachments import AttachmentError
+from flatpilot.compose import TemplateError
+from flatpilot.fillers.base import FillError
 
 app = typer.Typer(
     name="flatpilot",
@@ -550,7 +553,7 @@ def apply(
     except LookupError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(2) from exc
-    except Exception as exc:  # FillError, AttachmentError, TemplateError, etc.
+    except (FillError, AttachmentError, TemplateError) as exc:
         console.print(f"[red]{type(exc).__name__}: {exc}[/red]")
         raise typer.Exit(1) from exc
 
@@ -566,15 +569,10 @@ def apply(
                 console.print(f"  screenshot: {report.screenshot_path}")
         return
 
-    if outcome.status == "submitted":
-        console.print(
-            f"[green]submitted[/green] · application_id={outcome.application_id}"
-        )
-        return
-
-    # Should not be reachable — failed paths raise above.
-    console.print(f"[red]unexpected status: {outcome.status}[/red]")
-    raise typer.Exit(1)
+    # The remaining valid status is "submitted"; ApplyStatus narrows the type.
+    console.print(
+        f"[green]submitted[/green] · application_id={outcome.application_id}"
+    )
 
 
 @app.command()

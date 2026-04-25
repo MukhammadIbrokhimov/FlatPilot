@@ -29,10 +29,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-# Force registry side-effect imports so get_filler / SCHEMAS contain
-# everything by the time apply_to_flat runs.
+# Force the filler registry to populate before apply_to_flat runs.
+# init_db() handles the schemas import internally.
 import flatpilot.fillers.wg_gesucht  # noqa: F401
-import flatpilot.schemas  # noqa: F401
 from flatpilot.attachments import resolve_for_platform
 from flatpilot.compose import compose_anschreiben
 from flatpilot.database import get_conn, init_db
@@ -47,7 +46,7 @@ class ProfileMissingError(RuntimeError):
     """Raised when ``apply_to_flat`` runs before ``flatpilot init``."""
 
 
-ApplyStatus = Literal["submitted", "failed", "dry_run"]
+ApplyStatus = Literal["submitted", "dry_run"]
 
 
 @dataclass
@@ -56,7 +55,10 @@ class ApplyOutcome:
 
     - ``status='dry_run'`` — preview only, no row written.
     - ``status='submitted'`` — filler submitted successfully, row written.
-    - ``status='failed'`` — filler raised :class:`FillError`, row written.
+
+    Filler failures don't produce an ``ApplyOutcome``: a row is written with
+    ``status='failed'`` (persisted to the ``applications`` table) and the
+    underlying :class:`FillError` is re-raised to the caller.
     """
 
     status: ApplyStatus

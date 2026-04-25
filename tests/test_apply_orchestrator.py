@@ -16,7 +16,7 @@ from flatpilot.fillers.base import (
     FillReport,
     NotAuthenticatedError,
 )
-from flatpilot.profile import Profile, save_profile
+from flatpilot.profile import Attachments, Profile, save_profile
 
 
 def _profile_for_test(tmp_path: Path) -> Profile:
@@ -28,7 +28,7 @@ def _profile_for_test(tmp_path: Path) -> Profile:
     profile = Profile.load_example().model_copy(
         update={
             "city": "Berlin",
-            "attachments": {"default": ["schufa.pdf"], "per_platform": {}},
+            "attachments": Attachments(default=["schufa.pdf"], per_platform={}),
         }
     )
     save_profile(profile)
@@ -199,7 +199,7 @@ def test_apply_missing_attachment_raises_no_row(tmp_db, tmp_path, monkeypatch):
     profile = Profile.load_example().model_copy(
         update={
             "city": "Berlin",
-            "attachments": {"default": ["does-not-exist.pdf"], "per_platform": {}},
+            "attachments": Attachments(default=["does-not-exist.pdf"], per_platform={}),
         }
     )
     save_profile(profile)

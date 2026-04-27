@@ -83,10 +83,13 @@ def supports_city(scraper_cls: type[Scraper], city: str) -> bool:
     gate stays consistent with each scraper's internal CITY_IDS dict
     lookup — ``"berlin"`` is not the same value as ``"Berlin"`` and
     neither is ``"Frankfurt"`` vs ``"Frankfurt am Main"``. A scraper
-    with ``supported_cities = None`` (or no ``supported_cities``
-    attribute at all) accepts every city.
+    with ``supported_cities = None`` accepts every city. The attribute
+    must be declared (``@register`` enforces this for registered
+    scrapers); ad-hoc test stubs that don't go through ``@register``
+    must still set ``supported_cities = None`` to participate in the
+    gate.
     """
-    supported = getattr(scraper_cls, "supported_cities", None)
+    supported = scraper_cls.supported_cities
     return supported is None or city in supported
 
 

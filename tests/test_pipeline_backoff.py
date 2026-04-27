@@ -32,6 +32,11 @@ class _Recorder:
 
 class _FakeScraper:
     platform = "fake"
+    # Ad-hoc stub — bypasses @register, so the strict declaration check
+    # there does not apply. supports_city() reads the attribute directly,
+    # so we still need to declare it; None = "no city restriction" lets
+    # any test profile drive this fake through the gate.
+    supported_cities: frozenset[str] | None = None
 
     def __init__(self, behaviours: list[Any]) -> None:
         # Each element is either a list[Flat] (success) or an Exception

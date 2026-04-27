@@ -47,6 +47,7 @@ def _make_stub(platform: str, supported_cities: frozenset[str] | None) -> type[_
 
 
 def test_run_scrape_pass_skips_scrapers_whose_cities_dont_match(tmp_db) -> None:
+    """Scrapers declaring cities not matching profile.city are skipped at the gate."""
     from flatpilot.cli import _run_scrape_pass
 
     profile = _profile_for_city("Munich")  # not in any stub's supported set
@@ -69,6 +70,7 @@ def test_run_scrape_pass_skips_scrapers_whose_cities_dont_match(tmp_db) -> None:
 
 
 def test_run_scrape_pass_runs_all_when_all_support_city(tmp_db) -> None:
+    """When every scraper supports profile.city the gate is a no-op."""
     from flatpilot.cli import _run_scrape_pass
 
     profile = _profile_for_city("Berlin")
@@ -83,9 +85,7 @@ def test_run_scrape_pass_runs_all_when_all_support_city(tmp_db) -> None:
     assert b.fetch_called_with == "Berlin"
 
 
-def test_scrape_command_rejects_explicit_platform_for_unsupported_city(
-    tmp_db, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_scrape_command_rejects_explicit_platform_for_unsupported_city(tmp_db) -> None:
     """`flatpilot scrape --platform kleinanzeigen` exits 1 when profile.city is non-Berlin."""
     from typer.testing import CliRunner
 

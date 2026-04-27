@@ -294,10 +294,11 @@ def scrape(
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(1) from exc
         if not supports_city(scraper_cls, profile.city):
+            # supports_city only returns False when supported_cities is a
+            # non-None frozenset, so the None branch is unreachable here;
+            # an empty frozenset is rendered as "no cities".
             supported = scraper_cls.supported_cities
-            cities_label = (
-                "any city" if supported is None else ", ".join(sorted(supported)) or "no cities"
-            )
+            cities_label = ", ".join(sorted(supported)) or "no cities"
             console.print(
                 f"[red]{platform}: city {profile.city!r} not supported "
                 f"(supports: {cities_label})[/red]"

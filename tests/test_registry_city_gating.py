@@ -42,6 +42,7 @@ def test_supports_city_exact_match_only() -> None:
 
 
 def test_supports_city_handles_multi_city_set() -> None:
+    """A frozenset with multiple cities admits each member and rejects others."""
     from flatpilot.scrapers import supports_city
 
     cls = _stub_scraper_cls(frozenset({"Berlin", "Hamburg", "Munich"}))
@@ -64,12 +65,9 @@ def test_register_rejects_class_without_supported_cities(monkeypatch: pytest.Mon
     """A class that forgets to declare supported_cities fails at @register time."""
     from flatpilot import scrapers
 
-    # monkeypatch.setattr swaps _REGISTRY at module scope; register() reads
-    # the name through module globals so the swap takes effect. Don't
-    # refactor register to bind _REGISTRY in a closure or default arg
-    # without updating this test. monkeypatch's function scope guarantees
-    # each test gets a fresh empty dict and the original is restored
-    # afterwards.
+    # Replace _REGISTRY for this test so the spurious registration cannot
+    # collide with the real registry. monkeypatch's function scope restores
+    # the original on teardown.
     monkeypatch.setattr(scrapers, "_REGISTRY", {})
 
     with pytest.raises(TypeError, match=r"supported_cities"):

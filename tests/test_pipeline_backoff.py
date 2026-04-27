@@ -8,7 +8,7 @@ the sequence of backoff state transitions.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -31,12 +31,12 @@ class _Recorder:
 
 
 class _FakeScraper:
-    platform = "fake"
+    platform: ClassVar[str] = "fake"
     # Ad-hoc stub — bypasses @register, so the strict declaration check
     # there does not apply. supports_city() reads the attribute directly,
     # so we still need to declare it; None = "no city restriction" lets
     # any test profile drive this fake through the gate.
-    supported_cities: frozenset[str] | None = None
+    supported_cities: ClassVar[frozenset[str] | None] = None
 
     def __init__(self, behaviours: list[Any]) -> None:
         # Each element is either a list[Flat] (success) or an Exception

@@ -211,6 +211,7 @@ def _run_pipeline_once(profile, console) -> int:
 
 
 def _run_pipeline_scrape(profile, console) -> None:
+    import flatpilot.scrapers.inberlinwohnen  # noqa: F401 — triggers @register
     import flatpilot.scrapers.kleinanzeigen  # noqa: F401 — triggers @register
     import flatpilot.scrapers.wg_gesucht  # noqa: F401 — triggers @register
     from flatpilot.scrapers import all_scrapers
@@ -270,6 +271,7 @@ def scrape(
 
     from rich.console import Console
 
+    import flatpilot.scrapers.inberlinwohnen  # noqa: F401 — triggers @register
     import flatpilot.scrapers.kleinanzeigen  # noqa: F401 — triggers @register
     import flatpilot.scrapers.wg_gesucht  # noqa: F401 — triggers @register
     from flatpilot.database import init_db

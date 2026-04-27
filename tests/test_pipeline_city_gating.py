@@ -134,3 +134,66 @@ def test_scrape_command_runs_when_explicit_platform_supports_city(
 
     assert result.exit_code == 0, result.output
     assert called.get("city") == "Berlin"
+
+
+def test_scrape_command_bootstrap_imports_inberlinwohnen() -> None:
+    """Both bootstrap sites in cli.py import flatpilot.scrapers.inberlinwohnen
+    so @register fires during command startup.
+
+    Pure source inspection — once Task 2's parser tests import the
+    scraper module, ``sys.modules`` is populated for the rest of the
+    pytest session and behavioural tests cannot distinguish 'bootstrap
+    imports it' from 'parser tests imported it earlier'. Source
+    inspection is the only test that's actually red before the
+    implementer adds the import lines.
+    """
+    from pathlib import Path
+
+    src = Path("src/flatpilot/cli.py").read_text()
+    occurrences = src.count("import flatpilot.scrapers.inberlinwohnen")
+    assert occurrences == 2, (
+        f"expected 2 bootstrap imports of "
+        f"flatpilot.scrapers.inberlinwohnen in cli.py "
+        f"(one in _run_pipeline_scrape, one in scrape command); "
+        f"found {occurrences}"
+    )
+
+
+def test_pipeline_filters_inberlinwohnen_for_non_berlin_profile(
+    tmp_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Munich profile drives _run_scrape_pass to skip both kleinanzeigen
+    and inberlinwohnen (Berlin-only) but still call wg-gesucht (multi-city)."""
+    from flatpilot.cli import _run_scrape_pass
+    from flatpilot.profile import Profile
+    from flatpilot.scrapers import inberlinwohnen as ib
+    from flatpilot.scrapers import kleinanzeigen as kz
+    from flatpilot.scrapers import wg_gesucht as wg
+
+    called: dict[str, str] = {}
+
+    def _capture(self, profile):
+        called[type(self).platform] = profile.city
+        yield from ()
+
+    monkeypatch.setattr(ib.InBerlinWohnenScraper, "fetch_new", _capture)
+    monkeypatch.setattr(kz.KleinanzeigenScraper, "fetch_new", _capture)
+    monkeypatch.setattr(wg.WGGesuchtScraper, "fetch_new", _capture)
+
+    profile = Profile.load_example().model_copy(update={"city": "Munich"})
+    console = Console(record=True)
+
+    scrapers = [
+        ib.InBerlinWohnenScraper(),
+        kz.KleinanzeigenScraper(),
+        wg.WGGesuchtScraper(),
+    ]
+    _run_scrape_pass(scrapers, profile, console)
+
+    assert "inberlinwohnen" not in called
+    assert "kleinanzeigen" not in called
+    assert called.get("wg-gesucht") == "Munich"
+
+    output = console.export_text()
+    assert "inberlinwohnen: skipping — city 'Munich' not supported" in output
+    assert "kleinanzeigen: skipping — city 'Munich' not supported" in output

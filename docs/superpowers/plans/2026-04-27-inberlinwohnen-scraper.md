@@ -314,6 +314,12 @@
       """A class that forgets to declare supported_cities fails at @register time."""
       from flatpilot import scrapers
 
+      # monkeypatch.setattr swaps _REGISTRY at module scope; register() reads
+      # the name through module globals so the swap takes effect. Don't
+      # refactor register to bind _REGISTRY in a closure or default arg
+      # without updating this test. monkeypatch's function scope guarantees
+      # each test gets a fresh empty dict and the original is restored
+      # afterwards.
       monkeypatch.setattr(scrapers, "_REGISTRY", {})
 
       with pytest.raises(TypeError, match=r"supported_cities"):
@@ -452,7 +458,6 @@
 
   from __future__ import annotations
 
-  import logging
   from typing import Any, ClassVar
 
   import pytest
@@ -482,6 +487,10 @@
 
 
   def _make_stub(platform: str, supported_cities: frozenset[str] | None) -> type[_GenericScraper]:
+      """Build a fresh subclass of ``_GenericScraper`` with the given
+      platform name and supported_cities — used by the gate tests so
+      each stub has a distinct identity in the registry / logs without
+      duplicating the boilerplate of the base class."""
       cls = type(
           f"_Stub_{platform.replace('-', '_')}",
           (_GenericScraper,),
@@ -493,9 +502,7 @@
       return cls
 
 
-  def test_run_scrape_pass_skips_scrapers_whose_cities_dont_match(
-      tmp_db, caplog: pytest.LogCaptureFixture
-  ) -> None:
+  def test_run_scrape_pass_skips_scrapers_whose_cities_dont_match(tmp_db) -> None:
       from flatpilot.cli import _run_scrape_pass
 
       profile = _profile_for_city("Munich")  # not in any stub's supported set
@@ -505,8 +512,7 @@
       any_city = _make_stub("any-city", None)()
       multi_city = _make_stub("multi", frozenset({"Berlin", "Hamburg", "Munich"}))()
 
-      with caplog.at_level(logging.INFO):
-          _run_scrape_pass([berlin_only, any_city, multi_city], profile, console)
+      _run_scrape_pass([berlin_only, any_city, multi_city], profile, console)
 
       # berlin-only stub must NOT be called; the multi-city stub IS Munich-supported;
       # the any-city stub is None-cities → always called.
@@ -855,6 +861,16 @@
 
   Phase 1 MVP scrapes page 1 only (~10 listings). Pagination can land
   later without changing the public shape.
+
+  WBS scope note: the search-results card exposes only the binary
+  ``WBS: erforderlich`` / ``WBS: nicht erforderlich`` flag — no
+  per-listing size or income tier. The bead (FlatPilot-rqks) asked
+  for size + income extraction "when stated"; on this aggregator the
+  tier values live on the operator's expose page (off-site deeplink)
+  and are intentionally out of scope for the search-page parser. If
+  the page later starts surfacing tier rows in the dl, extend
+  ``_parse_card`` to write ``wbs_size_category`` /
+  ``wbs_income_category`` from the matching dt/dd entries.
   """
 
   from __future__ import annotations
@@ -1202,6 +1218,32 @@
           "</body></html>"
       )
       assert list(parse_listings(html)) == []
+
+
+  def test_parse_listings_empty_html_yields_nothing() -> None:
+      """A page with no apartment-* divs (e.g. a search returning zero
+      hits) yields zero flats without raising — important so an empty
+      legitimate result doesn't trigger anti-bot cool-off in the
+      orchestrator."""
+      from flatpilot.scrapers.inberlinwohnen import parse_listings
+
+      assert list(parse_listings("<html><body></body></html>")) == []
+
+
+  def test_parse_listings_district_is_a_district_name_not_plz() -> None:
+      """Every emitted Flat's district (when present) is a Berlin-borough
+      name, not a 5-digit postcode. The fixture spans 6 different
+      operators (degewo, Gesobau, Howoge, Stadt und Land, WBM, Gewobag);
+      this guards against a future card whose address shape ('Street, PLZ'
+      with no trailing district) would otherwise leak the PLZ as the
+      district value and break filter_district + the matcher."""
+      from flatpilot.scrapers.inberlinwohnen import parse_listings
+
+      html = FIXTURE.read_text()
+      for f in parse_listings(html):
+          if "district" in f:
+              assert not f["district"].isdigit(), f"district is a PLZ: {f}"
+              assert len(f["district"]) > 2
   ```
 
 - [ ] **Step 2.3.2: Run all parser tests**
@@ -1210,7 +1252,7 @@
   ```bash
   .venv/bin/pytest tests/test_inberlinwohnen_scraper.py -v
   ```
-  Expected: 8 passes.
+  Expected: 10 passes.
 
 ### 2.4 — Failing test that the scraper class is wired up correctly
 
@@ -1291,7 +1333,7 @@
   ```bash
   .venv/bin/pytest tests/test_inberlinwohnen_scraper.py -v
   ```
-  Expected: 10 passes.
+  Expected: 12 passes.
 
 ### 2.5 — Wrap up Task 2
 
@@ -1333,46 +1375,27 @@
   Append to `tests/test_pipeline_city_gating.py`:
 
   ```python
-  def test_scrape_command_runs_inberlinwohnen_for_berlin_profile(
-      tmp_db, monkeypatch: pytest.MonkeyPatch
-  ) -> None:
-      """`flatpilot scrape` (which wires the scrape bootstrap) drives
-      inberlinwohnen for a Berlin profile.
+  def test_scrape_command_bootstrap_imports_inberlinwohnen() -> None:
+      """Both bootstrap sites in cli.py import flatpilot.scrapers.inberlinwohnen
+      so @register fires during command startup.
 
-      Stubs fetch_new on every scraper class so the test never hits the
-      network. The assertion that inberlinwohnen.fetch_new was called
-      proves the bootstrap import line is in place — the scraper class
-      can only enter the registry if @register fires, which only fires
-      when the module is imported.
+      Pure source inspection — once Task 2's parser tests import the
+      scraper module, ``sys.modules`` is populated for the rest of the
+      pytest session and behavioural tests cannot distinguish 'bootstrap
+      imports it' from 'parser tests imported it earlier'. Source
+      inspection is the only test that's actually red before the
+      implementer adds the import lines.
       """
-      from typer.testing import CliRunner
+      from pathlib import Path
 
-      from flatpilot.cli import app
-      from flatpilot.profile import Profile, save_profile
-      from flatpilot.scrapers import inberlinwohnen as ib
-      from flatpilot.scrapers import kleinanzeigen as kz
-      from flatpilot.scrapers import wg_gesucht as wg
-
-      profile = Profile.load_example().model_copy(update={"city": "Berlin"})
-      save_profile(profile)
-
-      called: dict[str, str] = {}
-
-      def _capture(self, profile):
-          called[type(self).platform] = profile.city
-          yield from ()
-
-      monkeypatch.setattr(ib.InBerlinWohnenScraper, "fetch_new", _capture)
-      monkeypatch.setattr(kz.KleinanzeigenScraper, "fetch_new", _capture)
-      monkeypatch.setattr(wg.WGGesuchtScraper, "fetch_new", _capture)
-
-      runner = CliRunner()
-      result = runner.invoke(app, ["scrape"])
-
-      assert result.exit_code == 0, result.output
-      assert called.get("inberlinwohnen") == "Berlin"
-      assert called.get("kleinanzeigen") == "Berlin"
-      assert called.get("wg-gesucht") == "Berlin"
+      src = Path("src/flatpilot/cli.py").read_text()
+      occurrences = src.count("import flatpilot.scrapers.inberlinwohnen")
+      assert occurrences == 2, (
+          f"expected 2 bootstrap imports of "
+          f"flatpilot.scrapers.inberlinwohnen in cli.py "
+          f"(one in _run_pipeline_scrape, one in scrape command); "
+          f"found {occurrences}"
+      )
 
 
   def test_pipeline_filters_inberlinwohnen_for_non_berlin_profile(
@@ -1419,9 +1442,9 @@
 
   Run:
   ```bash
-  .venv/bin/pytest tests/test_pipeline_city_gating.py::test_scrape_command_runs_inberlinwohnen_for_berlin_profile -v
+  .venv/bin/pytest tests/test_pipeline_city_gating.py::test_scrape_command_bootstrap_imports_inberlinwohnen -v
   ```
-  Expected: fails with `assert called.get("inberlinwohnen") == "Berlin"` returning `None == "Berlin"` — `flatpilot scrape` does not currently import `flatpilot.scrapers.inberlinwohnen`, so `@register` never fires for it, so `all_scrapers()` returns only the two existing platforms. (The other new test, `test_pipeline_filters_inberlinwohnen_for_non_berlin_profile`, instantiates the class directly and should already pass — Task 2's tests caused the inberlinwohnen module to be imported in this pytest session.)
+  Expected: fails with `expected 2 bootstrap imports of flatpilot.scrapers.inberlinwohnen in cli.py … found 0`. (The other new test, `test_pipeline_filters_inberlinwohnen_for_non_berlin_profile`, instantiates the class directly and should already pass — Task 2's tests caused the inberlinwohnen module to be imported in this pytest session, so `_REGISTRY` already has the entry. That's exactly why we're using a source-inspection test for the bootstrap step rather than a behavioural one.)
 
 - [ ] **Step 3.1.3: Add the bootstrap import to `_run_pipeline_scrape`**
 
@@ -1446,7 +1469,7 @@
 
 - [ ] **Step 3.1.4: Add the bootstrap import to the `scrape` command**
 
-  Still in `src/flatpilot/cli.py`. Find the `scrape` command (lines 258–311). Replace this block (lines 273–277):
+  Still in `src/flatpilot/cli.py`. Find the `scrape` command (lines 258–311). This step assumes Step 1.5.3 has already added `supports_city` to the import line — if you somehow ran Task 3 before completing Task 1, that import will need to be added here too. Replace this block (lines 273–277):
 
   ```python
       import flatpilot.scrapers.kleinanzeigen  # noqa: F401 — triggers @register
@@ -1509,7 +1532,7 @@
   ```bash
   .venv/bin/pytest tests/ -v 2>&1 | tail -40
   ```
-  Expected: every test passes. Note any new tests added by this PR (~16 across `test_registry_city_gating.py`, `test_inberlinwohnen_scraper.py`, `test_pipeline_city_gating.py`) and confirm none are skipped.
+  Expected: every test passes. Note any new tests added by this PR (~25 across `test_registry_city_gating.py` (7), `test_inberlinwohnen_scraper.py` (12), `test_pipeline_city_gating.py` (6)) and confirm none are skipped.
 
 - [ ] **F.2: Run ruff**
 

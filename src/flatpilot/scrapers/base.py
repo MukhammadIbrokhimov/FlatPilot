@@ -61,6 +61,13 @@ class Scraper(Protocol):
 
     platform: ClassVar[str]
     user_agent: ClassVar[str]
+    # Frozenset of exact-match city names this scraper accepts (compared
+    # verbatim to ``profile.city``). ``None`` means "no city restriction —
+    # supports any city". The @register decorator enforces declaration so
+    # a new scraper that forgets the field fails loudly at import time
+    # rather than silently running against the wrong cities. See
+    # ``flatpilot.scrapers.supports_city`` for the comparison helper.
+    supported_cities: ClassVar[frozenset[str] | None]
 
     def fetch_new(self, profile: Profile) -> Iterable[Flat]:
         """Yield every listing currently visible under ``profile``."""

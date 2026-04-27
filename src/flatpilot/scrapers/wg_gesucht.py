@@ -101,6 +101,10 @@ class UnknownCityError(ValueError):
 class WGGesuchtScraper:
     platform: ClassVar[str] = "wg-gesucht"
     user_agent: ClassVar[str] = DEFAULT_USER_AGENT
+    # Cities WG-Gesucht has a numeric search ID for. The class body is
+    # evaluated AFTER the module-level CITY_IDS dict, so the keys are
+    # already available at class-creation time.
+    supported_cities: ClassVar[frozenset[str] | None] = frozenset(CITY_IDS.keys())
 
     def fetch_new(self, profile: Profile) -> Iterable[Flat]:
         city_id = CITY_IDS.get(profile.city)

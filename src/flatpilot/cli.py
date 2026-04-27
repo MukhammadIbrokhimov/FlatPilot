@@ -274,7 +274,7 @@ def scrape(
     import flatpilot.scrapers.wg_gesucht  # noqa: F401 — triggers @register
     from flatpilot.database import init_db
     from flatpilot.profile import load_profile
-    from flatpilot.scrapers import all_scrapers, get_scraper
+    from flatpilot.scrapers import all_scrapers, get_scraper, supports_city
 
     console = Console()
 
@@ -289,10 +289,21 @@ def scrape(
 
     if platform:
         try:
-            scrapers = [get_scraper(platform)()]
+            scraper_cls = get_scraper(platform)
         except KeyError as exc:
             console.print(f"[red]{exc}[/red]")
             raise typer.Exit(1) from exc
+        if not supports_city(scraper_cls, profile.city):
+            supported = scraper_cls.supported_cities
+            cities_label = (
+                "any city" if supported is None else ", ".join(sorted(supported)) or "no cities"
+            )
+            console.print(
+                f"[red]{platform}: city {profile.city!r} not supported "
+                f"(supports: {cities_label})[/red]"
+            )
+            raise typer.Exit(1)
+        scrapers = [scraper_cls()]
     else:
         scrapers = [cls() for cls in all_scrapers()]
 
@@ -315,7 +326,7 @@ def _run_scrape_pass(scrapers: list, profile, console) -> None:
     from datetime import datetime
 
     from flatpilot.database import get_conn
-    from flatpilot.scrapers import backoff
+    from flatpilot.scrapers import backoff, supports_city
     from flatpilot.scrapers.session import ChallengeDetectedError, RateLimitedError
 
     conn = get_conn()
@@ -323,6 +334,11 @@ def _run_scrape_pass(scrapers: list, profile, console) -> None:
     now = now_dt.isoformat()
     for scraper in scrapers:
         plat = scraper.platform
+        if not supports_city(type(scraper), profile.city):
+            console.print(
+                f"[dim]{plat}: skipping — city {profile.city!r} not supported[/dim]"
+            )
+            continue
         skip, remaining = backoff.should_skip(plat, now=now_dt)
         if skip:
             console.print(

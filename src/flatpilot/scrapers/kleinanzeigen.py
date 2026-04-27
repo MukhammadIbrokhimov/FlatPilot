@@ -97,6 +97,9 @@ class KleinanzeigenScraper:
     # picked from the pool via resolve_user_agent() so repeated fresh
     # sessions don't all share one fingerprint.
     user_agent: ClassVar[str] = DEFAULT_USER_AGENT
+    # Berlin-only today — extending requires both an entry in CITY_IDS
+    # above AND adding the city here so the orchestrator stops gating.
+    supported_cities: ClassVar[frozenset[str] | None] = frozenset(CITY_IDS.keys())
 
     def resolve_user_agent(self) -> str:
         return pin_user_agent(self.platform)

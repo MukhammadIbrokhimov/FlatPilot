@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections.abc import Iterable
 from typing import Any, ClassVar
 from urllib.parse import urljoin
@@ -70,6 +71,21 @@ CONSENT_SELECTORS: tuple[str, ...] = (
     "button:has-text('Zustimmen')",
 )
 
+# Pagination constants. The Wohnungsfinder feed uses server-rendered
+# `?page=N` URLs (verified empirically — page 99 returns a fully-rendered
+# page with 0 cards and `keine Ergebnisse` markers; page 22 is currently
+# the last page with 2 listings). On a fresh install the full inventory
+# is ~22 pages × 10 listings = ~220 flats; MAX_PAGES caps that with
+# headroom for organic growth without changing code.
+MAX_PAGES: int = 30
+
+# Sleep between page fetches inside one polite_session. Distinct from
+# session.DEFAULT_INTERVAL_SEC (120s, inter-pass) — this is intra-pass
+# politeness so 30 sequential page loads spread over ~45s rather than
+# spiking the host with parallel-feeling requests. 1.5s is conservative;
+# WG-Gesucht's ~2s rule of thumb informs the choice.
+POLITE_PAGE_DELAY_SEC: float = 1.5
+
 
 _APARTMENT_ID_RE = re.compile(r"^apartment-(\d+)$")
 # German number: optional thousand-dot groups, optional decimal comma.
@@ -83,7 +99,12 @@ class InBerlinWohnenScraper:
     user_agent: ClassVar[str] = DEFAULT_USER_AGENT
     supported_cities: ClassVar[frozenset[str] | None] = frozenset({"Berlin"})
 
-    def fetch_new(self, profile: Profile) -> Iterable[Flat]:
+    def fetch_new(
+        self,
+        profile: Profile,
+        *,
+        known_external_ids: frozenset[str] = frozenset(),
+    ) -> Iterable[Flat]:
         config = SessionConfig(
             platform=self.platform,
             user_agent=self.user_agent,
@@ -91,23 +112,56 @@ class InBerlinWohnenScraper:
             consent_selectors=CONSENT_SELECTORS,
         )
 
-        logger.info("%s: fetching %s", self.platform, SEARCH_URL)
+        all_flats: list[Flat] = []
         with polite_session(config) as context, session_page(context) as pg:
-            response = pg.goto(SEARCH_URL, wait_until="domcontentloaded")
-            if response is None:
-                logger.warning("%s: null response from %s", self.platform, SEARCH_URL)
-                return
-            check_rate_limit(response.status, self.platform)
-            if response.status >= 400:
-                logger.warning(
-                    "%s: search returned HTTP %d", self.platform, response.status
-                )
-                return
-            html = pg.content()
+            for page_num in range(1, MAX_PAGES + 1):
+                if page_num == 1:
+                    url = SEARCH_URL
+                else:
+                    url = f"{SEARCH_URL}?page={page_num}"
+                    time.sleep(POLITE_PAGE_DELAY_SEC)
 
-        flats = list(parse_listings(html))
-        logger.info("%s: parsed %d listings", self.platform, len(flats))
-        yield from flats
+                logger.info("%s: fetching %s", self.platform, url)
+                response = pg.goto(url, wait_until="domcontentloaded")
+                if response is None:
+                    logger.warning("%s: null response from %s", self.platform, url)
+                    break
+                check_rate_limit(response.status, self.platform)
+                if response.status >= 400:
+                    logger.warning(
+                        "%s: page %d returned HTTP %d",
+                        self.platform,
+                        page_num,
+                        response.status,
+                    )
+                    break
+                html = pg.content()
+
+                page_flats = list(parse_listings(html))
+                logger.info(
+                    "%s: page %d → %d listings",
+                    self.platform,
+                    page_num,
+                    len(page_flats),
+                )
+                if not page_flats:
+                    # Empty page — past the end of the inventory.
+                    break
+                all_flats.extend(page_flats)
+
+                page_ids = {f["external_id"] for f in page_flats}
+                if page_ids and page_ids.issubset(known_external_ids):
+                    # Steady state: every ID on this page is already in
+                    # the DB, so older pages will be too. Stop early.
+                    logger.info(
+                        "%s: page %d fully known — stopping pagination",
+                        self.platform,
+                        page_num,
+                    )
+                    break
+
+        logger.info("%s: parsed %d listings total", self.platform, len(all_flats))
+        yield from all_flats
 
 
 def parse_listings(html: str) -> Iterable[Flat]:

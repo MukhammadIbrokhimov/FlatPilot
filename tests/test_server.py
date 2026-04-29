@@ -299,7 +299,9 @@ def test_post_response_unknown_id_returns_404(tmp_db):
     assert "no application with id 9999" in data["error"]
 
 
-def test_spawn_apply_returns_structured_error_on_subprocess_timeout(tmp_db):
+def test_spawn_apply_returns_structured_error_on_subprocess_timeout(
+    tmp_db, monkeypatch
+):
     """A hung 'flatpilot apply' subprocess must surface as ok=False, not raise.
 
     Pre-fix _spawn_apply called subprocess.run with no timeout — a stuck
@@ -308,6 +310,7 @@ def test_spawn_apply_returns_structured_error_on_subprocess_timeout(tmp_db):
     function returns the structured error shape the dashboard handler
     expects.
     """
+    monkeypatch.delenv("FLATPILOT_APPLY_TIMEOUT_SEC", raising=False)
     import subprocess
     from unittest.mock import patch
 
@@ -329,7 +332,7 @@ def test_spawn_apply_returns_structured_error_on_subprocess_timeout(tmp_db):
 
     assert result["ok"] is False
     assert result["returncode"] is None
-    assert "timed out" in result["stdout_tail"].lower()
+    assert "timed out after 180s" in result["stdout_tail"]
     # Captured-before-timeout output should still surface so the user
     # sees how far the apply got.
     assert "logged in" in result["stdout_tail"]

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -42,6 +43,42 @@ from flatpilot.fillers.base import FillError, FillReport
 from flatpilot.profile import Profile, load_profile
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_APPLY_TIMEOUT_SEC = 180
+
+
+def apply_timeout_sec() -> int:
+    """Resolve the per-call apply subprocess timeout.
+
+    Default 180s — a reasonable upper bound for a headed Playwright
+    apply (load + login + fill + submit + screenshot typically takes
+    20-60s, with margin for slow networks and one CAPTCHA-equivalent
+    prompt). Override via ``FLATPILOT_APPLY_TIMEOUT_SEC`` for users on
+    very slow networks (raise it) or paranoid CI environments (lower
+    it). Invalid values (non-int, non-positive) log a warning and fall
+    back to the default — the caller has no recourse here, and a typo
+    in an ergonomics env var shouldn't break apply.
+    """
+    raw = os.environ.get("FLATPILOT_APPLY_TIMEOUT_SEC")
+    if raw is None:
+        return DEFAULT_APPLY_TIMEOUT_SEC
+    try:
+        v = int(raw)
+    except ValueError:
+        logger.warning(
+            "FLATPILOT_APPLY_TIMEOUT_SEC=%r is not an int; using default %ds",
+            raw,
+            DEFAULT_APPLY_TIMEOUT_SEC,
+        )
+        return DEFAULT_APPLY_TIMEOUT_SEC
+    if v <= 0:
+        logger.warning(
+            "FLATPILOT_APPLY_TIMEOUT_SEC=%d must be > 0; using default %ds",
+            v,
+            DEFAULT_APPLY_TIMEOUT_SEC,
+        )
+        return DEFAULT_APPLY_TIMEOUT_SEC
+    return v
 
 
 class AlreadyAppliedError(RuntimeError):

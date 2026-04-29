@@ -39,17 +39,12 @@ from urllib.parse import urlparse
 import flatpilot.fillers.wg_gesucht  # noqa: F401
 import flatpilot.schemas  # noqa: F401
 from flatpilot.applications import record_response, record_skip
+from flatpilot.apply import apply_timeout_sec
 from flatpilot.database import get_conn, init_db
 from flatpilot.profile import load_profile, profile_hash
 from flatpilot.view import generate_html
 
 logger = logging.getLogger(__name__)
-
-# Upper bound on a single dashboard-spawned `flatpilot apply` subprocess.
-# A real headed Playwright apply (load + login + fill + submit + screenshot)
-# typically takes 20-60s; 180s gives margin for slow networks and one
-# CAPTCHA-equivalent prompt while still bounding dashboard hang.
-APPLY_TIMEOUT_SEC = 180
 
 DEFAULT_PORT = 8765
 
@@ -65,28 +60,26 @@ def _spawn_apply(flat_id: int) -> dict:
     the browser. Stdout is tail-trimmed to ~2 KB so a verbose Playwright
     log doesn't bloat the JSON response.
 
-    Bounded by ``APPLY_TIMEOUT_SEC``: a hung child (e.g. Playwright stuck
+    Bounded by ``apply_timeout_sec()`` (default 180s, override via
+    ``FLATPILOT_APPLY_TIMEOUT_SEC``): a hung child (e.g. Playwright stuck
     on a CAPTCHA wait) is killed and surfaced as ``ok=False`` with the
     captured-so-far output, so the dashboard thread is freed.
 
     Patched in tests so we don't actually invoke the CLI.
     """
+    timeout_sec = apply_timeout_sec()
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "flatpilot", "apply", str(flat_id)],
             capture_output=True,
             text=True,
             check=False,
-            timeout=APPLY_TIMEOUT_SEC,
+            timeout=timeout_sec,
         )
     except subprocess.TimeoutExpired as exc:
         captured = (exc.stdout or "") + (exc.stderr or "")
-        # subprocess.run with text=True normally yields str; defend against
-        # the bytes path just in case a caller passed text=False.
-        if isinstance(captured, bytes):
-            captured = captured.decode("utf-8", errors="replace")
         tail_body = captured[-2000:].strip()
-        prefix = f"timed out after {APPLY_TIMEOUT_SEC}s"
+        prefix = f"timed out after {timeout_sec}s"
         tail = f"{prefix}\n{tail_body}".strip() if tail_body else prefix
         return {
             "ok": False,

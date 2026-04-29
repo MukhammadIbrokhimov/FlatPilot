@@ -16,7 +16,9 @@ import typer
 from rich import print as rprint
 
 from flatpilot.apply import (
+    APPLY_LOCK_HELD_EXIT,
     AlreadyAppliedError,
+    ApplyLockHeldError,
     ApplyOutcome,
     apply_to_flat,
 )
@@ -578,7 +580,17 @@ def apply(
     except LookupError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(2) from exc
+    except ApplyLockHeldError as exc:
+        # Lock-contention case (acquire_apply_lock). Exit
+        # APPLY_LOCK_HELD_EXIT (4) so server._handle_apply can translate
+        # to HTTP 409 ("apply already in progress, retry later"). MUST
+        # come before the parent except — Python matches first compatible
+        # clause. FlatPilot-wsp.
+        console.print(f"[yellow]{exc}[/yellow]")
+        raise typer.Exit(APPLY_LOCK_HELD_EXIT) from exc
     except AlreadyAppliedError as exc:
+        # Post-submit duplicate-row case (apply_to_flat). Application
+        # already completed earlier; do NOT retry. Exit 1 → HTTP 500.
         console.print(f"[yellow]{exc}[/yellow]")
         raise typer.Exit(1) from exc
     except (FillError, AttachmentError, TemplateError) as exc:

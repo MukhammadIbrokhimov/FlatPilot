@@ -350,8 +350,17 @@ def _run_scrape_pass(scrapers: list, profile, console) -> None:
                 f"[dim]{plat}: cooling off for {remaining:.0f}s more — skipping[/dim]"
             )
             continue
+        known_external_ids = frozenset(
+            row[0]
+            for row in conn.execute(
+                "SELECT external_id FROM flats WHERE platform = ?",
+                (plat,),
+            )
+        )
         try:
-            flats = list(scraper.fetch_new(profile))
+            flats = list(
+                scraper.fetch_new(profile, known_external_ids=known_external_ids)
+            )
         except RateLimitedError as exc:
             backoff.on_failure(plat, "rate_limit", now=datetime.now(UTC))
             console.print(f"[yellow]{plat}: {exc} — skipping this pass[/yellow]")

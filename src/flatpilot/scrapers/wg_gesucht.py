@@ -103,7 +103,12 @@ class WGGesuchtScraper:
     # already available at class-creation time.
     supported_cities: ClassVar[frozenset[str] | None] = frozenset(CITY_IDS.keys())
 
-    def fetch_new(self, profile: Profile) -> Iterable[Flat]:
+    def fetch_new(
+        self,
+        profile: Profile,
+        *,
+        known_external_ids: frozenset[str] = frozenset(),
+    ) -> Iterable[Flat]:
         city_id = CITY_IDS.get(profile.city)
         if city_id is None:
             raise UnknownCityError(

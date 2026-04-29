@@ -25,7 +25,7 @@ class _GenericScraper:
     def __init__(self) -> None:
         self.fetch_called_with: Any = None
 
-    def fetch_new(self, profile):
+    def fetch_new(self, profile, **_kwargs):
         self.fetch_called_with = profile.city
         yield from ()
 
@@ -123,7 +123,7 @@ def test_scrape_command_runs_when_explicit_platform_supports_city(
 
     called: dict[str, Any] = {}
 
-    def _fake_fetch(self, profile):  # noqa: ARG001
+    def _fake_fetch(self, profile, **_kwargs):  # noqa: ARG001
         called["city"] = profile.city
         yield from ()
 
@@ -172,7 +172,7 @@ def test_pipeline_filters_inberlinwohnen_for_non_berlin_profile(
 
     called: dict[str, str] = {}
 
-    def _capture(self, profile):
+    def _capture(self, profile, **_kwargs):
         called[type(self).platform] = profile.city
         yield from ()
 

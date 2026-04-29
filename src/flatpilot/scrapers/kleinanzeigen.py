@@ -101,7 +101,12 @@ class KleinanzeigenScraper:
     def resolve_user_agent(self) -> str:
         return pin_user_agent(self.platform)
 
-    def fetch_new(self, profile: Profile) -> Iterable[Flat]:
+    def fetch_new(
+        self,
+        profile: Profile,
+        *,
+        known_external_ids: frozenset[str] = frozenset(),
+    ) -> Iterable[Flat]:
         loc_id = CITY_IDS.get(profile.city)
         if loc_id is None:
             raise UnknownCityError(

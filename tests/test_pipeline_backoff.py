@@ -43,7 +43,7 @@ class _FakeScraper:
         # instance to raise.
         self._behaviours = list(behaviours)
 
-    def fetch_new(self, _profile: Any) -> Any:
+    def fetch_new(self, _profile: Any, **_kwargs: Any) -> Any:
         step = self._behaviours.pop(0)
         if isinstance(step, Exception):
             raise step

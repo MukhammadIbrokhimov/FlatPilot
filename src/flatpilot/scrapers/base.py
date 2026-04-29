@@ -3,7 +3,10 @@
 Each scraper is a class that sets a ``platform`` ClassVar, registers itself
 through :func:`flatpilot.scrapers.register`, and implements :meth:`fetch_new`.
 The orchestrator (``flatpilot scrape``, ``flatpilot run``) iterates the
-registry and calls ``fetch_new(profile)`` on each scraper.
+registry and calls ``fetch_new(profile, known_external_ids=...)`` on each
+scraper, where ``known_external_ids`` is the set of ``external_id`` values
+already persisted for that platform — used by paginating scrapers to
+terminate cheaply when they hit a fully-known page.
 
 ``Flat`` mirrors the C1 ``flats`` table schema. Only ``external_id``,
 ``listing_url``, and ``title`` are required on every yielded record —
@@ -69,8 +72,21 @@ class Scraper(Protocol):
     # ``flatpilot.scrapers.supports_city`` for the comparison helper.
     supported_cities: ClassVar[frozenset[str] | None]
 
-    def fetch_new(self, profile: Profile) -> Iterable[Flat]:
-        """Yield every listing currently visible under ``profile``."""
+    def fetch_new(
+        self,
+        profile: Profile,
+        *,
+        known_external_ids: frozenset[str] = frozenset(),
+    ) -> Iterable[Flat]:
+        """Yield every listing currently visible under ``profile``.
+
+        ``known_external_ids`` is an optional set of ``external_id`` values
+        already persisted in the ``flats`` table for this scraper's
+        platform. Scrapers that paginate may use it to terminate the page
+        walk once they observe a page whose IDs are entirely known. Single-
+        page scrapers ignore it. The pipeline always passes a frozenset
+        (possibly empty); callees should treat the value as read-only.
+        """
 
 
 def session_dir(platform: str) -> Path:

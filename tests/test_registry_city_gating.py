@@ -13,7 +13,7 @@ def _stub_scraper_cls(supported: frozenset[str] | None) -> type:
         user_agent: ClassVar[str] = "test-ua"
         supported_cities: ClassVar[frozenset[str] | None] = supported
 
-        def fetch_new(self, profile):  # noqa: ARG002 — protocol stub
+        def fetch_new(self, profile, **_kwargs):  # noqa: ARG002 — protocol stub
             yield from ()
 
     return _Stub
@@ -77,7 +77,7 @@ def test_register_rejects_class_without_supported_cities(monkeypatch: pytest.Mon
             platform: ClassVar[str] = "no-cities-test"
             user_agent: ClassVar[str] = "x"
 
-            def fetch_new(self, profile):  # noqa: ARG002
+            def fetch_new(self, profile, **_kwargs):  # noqa: ARG002 — protocol stub
                 yield from ()
 
 
@@ -93,7 +93,7 @@ def test_register_accepts_supported_cities_none(monkeypatch: pytest.MonkeyPatch)
         user_agent: ClassVar[str] = "x"
         supported_cities: ClassVar[frozenset[str] | None] = None
 
-        def fetch_new(self, profile):  # noqa: ARG002
+        def fetch_new(self, profile, **_kwargs):  # noqa: ARG002 — protocol stub
             yield from ()
 
     assert "any-city-test" in scrapers._REGISTRY
@@ -112,5 +112,5 @@ def test_register_still_rejects_missing_platform(monkeypatch: pytest.MonkeyPatch
             user_agent: ClassVar[str] = "x"
             supported_cities: ClassVar[frozenset[str] | None] = None
 
-            def fetch_new(self, profile):  # noqa: ARG002
+            def fetch_new(self, profile, **_kwargs):  # noqa: ARG002 — protocol stub
                 yield from ()

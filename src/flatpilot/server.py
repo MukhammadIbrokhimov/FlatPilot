@@ -40,7 +40,7 @@ from urllib.parse import urlparse
 import flatpilot.fillers.wg_gesucht  # noqa: F401
 import flatpilot.schemas  # noqa: F401
 from flatpilot.applications import record_response, record_skip
-from flatpilot.apply import apply_timeout_sec
+from flatpilot.apply import STALE_APPLY_BUFFER_SEC, apply_timeout_sec
 from flatpilot.database import get_conn, init_db
 from flatpilot.profile import load_profile, profile_hash
 from flatpilot.view import generate_html
@@ -121,15 +121,11 @@ def _spawn_apply(flat_id: int) -> dict:
 _inflight_lock = threading.Lock()
 _inflight_flats: dict[int, float] = {}
 
-# Buffer above the apply subprocess timeout — same formula as the
-# apply_locks stale-row reaper. Pulling from apply_timeout_sec()
-# (which honors FLATPILOT_APPLY_TIMEOUT_SEC) keeps the watchdog and
-# the DB lock self-consistent.
-_INFLIGHT_WATCHDOG_BUFFER_SEC = 60
-
-
+# Watchdog threshold mirrors the apply_locks stale-row reaper in
+# flatpilot.apply.acquire_apply_lock — both layers share
+# STALE_APPLY_BUFFER_SEC so a future tuning honors both at once.
 def _inflight_watchdog_threshold_sec() -> float:
-    return apply_timeout_sec() + _INFLIGHT_WATCHDOG_BUFFER_SEC
+    return apply_timeout_sec() + STALE_APPLY_BUFFER_SEC
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -188,14 +184,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         with _inflight_lock:
             threshold = _inflight_watchdog_threshold_sec()
             stale = [
-                fid
+                (fid, now - acquired_at)
                 for fid, acquired_at in _inflight_flats.items()
                 if now - acquired_at > threshold
             ]
-            for fid in stale:
+            for fid, age in stale:
                 logger.warning(
-                    "apply: watchdog clearing stale in-flight slot for flat_id=%d",
+                    "apply: watchdog clearing stale in-flight slot for "
+                    "flat_id=%d (held %.1fs, threshold %.1fs)",
                     fid,
+                    age,
+                    threshold,
                 )
                 _inflight_flats.pop(fid, None)
             if flat_id in _inflight_flats:

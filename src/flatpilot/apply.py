@@ -47,6 +47,15 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_APPLY_TIMEOUT_SEC = 180
 
+# Buffer added to apply_timeout_sec() before reaping stale state.
+# Wide enough that we never reap a row a slow apply could legitimately
+# still be holding, narrow enough that a kill -9'd holder unblocks the
+# next request reasonably fast. Shared with the dashboard's in-process
+# watchdog (see flatpilot.server._inflight_watchdog_threshold_sec) so
+# the DB lock reaper and the in-flight slot watchdog reap on the same
+# schedule.
+STALE_APPLY_BUFFER_SEC = 60
+
 
 def apply_timeout_sec() -> int:
     """Resolve the per-call apply subprocess timeout.
@@ -105,16 +114,17 @@ def acquire_apply_lock(conn, flat_id: int) -> None:
     ``AlreadyAppliedError`` with a message distinct from the existing
     "already has a submitted application" path.
 
-    Stale rows (acquired_at older than ``apply_timeout_sec() + 60``)
-    are reaped before the INSERT so a process crash (kill -9) doesn't
-    permanently block future applies for that flat. The buffer of 60s
-    on top of the apply timeout means we never reap a row that could
-    legitimately still be held by a slow apply. Reaping is bounded to
-    the target flat — siblings are left alone so parallel acquires for
-    different flats don't trip on each other.
+    Stale rows (acquired_at older than
+    ``apply_timeout_sec() + STALE_APPLY_BUFFER_SEC``) are reaped before
+    the INSERT so a process crash (kill -9) doesn't permanently block
+    future applies for that flat. The buffer means we never reap a row
+    that could legitimately still be held by a slow apply. Reaping is
+    bounded to the target flat — siblings are left alone so parallel
+    acquires for different flats don't trip on each other.
     """
     threshold_ts = (
-        datetime.now(UTC) - timedelta(seconds=apply_timeout_sec() + 60)
+        datetime.now(UTC)
+        - timedelta(seconds=apply_timeout_sec() + STALE_APPLY_BUFFER_SEC)
     ).isoformat()
     conn.execute(
         "DELETE FROM apply_locks WHERE flat_id = ? AND acquired_at < ?",

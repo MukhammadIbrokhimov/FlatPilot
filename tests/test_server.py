@@ -557,8 +557,9 @@ def test_inflight_watchdog_clears_stale_slot_on_acquire(tmp_db, monkeypatch):
         # _spawn_apply (which we mocked) and succeeded.
         assert status == 200
     finally:
-        # Defensive: don't leak module-level state across tests.
-        server_mod._inflight_flats.clear()
+        # Targeted cleanup — only the slot this test seeded. Avoids
+        # masking unrelated leaks from other tests.
+        server_mod._inflight_flats.pop(1, None)
 
 
 def test_inflight_watchdog_does_not_clear_fresh_slot(tmp_db, monkeypatch):
@@ -609,4 +610,5 @@ def test_inflight_watchdog_does_not_clear_fresh_slot(tmp_db, monkeypatch):
             f"fresh slot was incorrectly reaped — expected 409, got {status}"
         )
     finally:
-        server_mod._inflight_flats.clear()
+        # Targeted cleanup — only the slot this test seeded.
+        server_mod._inflight_flats.pop(1, None)

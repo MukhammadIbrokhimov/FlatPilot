@@ -33,6 +33,34 @@ from flatpilot.apply import (
 )
 
 # --------------------------------------------------------------------------- #
+# Shared-constant contract: the 60s buffer above apply_timeout_sec()
+# lives in exactly one place (FlatPilot-tb4). Both the apply_locks
+# stale-row reaper (acquire_apply_lock) and the dashboard's
+# _inflight_watchdog_threshold_sec import it from flatpilot.apply, so
+# a future tuning can't drift the two layers apart.
+# --------------------------------------------------------------------------- #
+
+
+def test_stale_apply_buffer_sec_is_exported_from_apply_module():
+    from flatpilot.apply import STALE_APPLY_BUFFER_SEC
+
+    assert STALE_APPLY_BUFFER_SEC == 60
+
+
+def test_inflight_watchdog_threshold_uses_shared_buffer_constant(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from flatpilot.apply import STALE_APPLY_BUFFER_SEC
+    from flatpilot.server import _inflight_watchdog_threshold_sec
+
+    monkeypatch.delenv("FLATPILOT_APPLY_TIMEOUT_SEC", raising=False)
+    assert _inflight_watchdog_threshold_sec() == 180 + STALE_APPLY_BUFFER_SEC
+
+    monkeypatch.setenv("FLATPILOT_APPLY_TIMEOUT_SEC", "30")
+    assert _inflight_watchdog_threshold_sec() == 30 + STALE_APPLY_BUFFER_SEC
+
+
+# --------------------------------------------------------------------------- #
 # Unit tests against the lock primitives directly.
 # --------------------------------------------------------------------------- #
 

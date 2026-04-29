@@ -98,3 +98,21 @@ CREATE TABLE IF NOT EXISTS applications (
 """
 
 SCHEMAS["applications"] = APPLICATIONS_CREATE_SQL
+
+
+# A row exists for the duration of an in-flight apply for ``flat_id``.
+# Cross-process correctness layer: two FlatPilot processes (CLI +
+# dashboard) racing on the same flat both attempt INSERT — the
+# PRIMARY KEY makes exactly one win, the loser raises
+# AlreadyAppliedError. Stale rows older than ``apply_timeout_sec() +
+# 60`` are reaped on next acquire to recover from process crashes
+# (kill -9, OS panic) so the slot doesn't block forever.
+APPLY_LOCKS_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS apply_locks (
+    flat_id INTEGER PRIMARY KEY,
+    acquired_at TEXT NOT NULL,
+    pid INTEGER NOT NULL
+)
+"""
+
+SCHEMAS["apply_locks"] = APPLY_LOCKS_CREATE_SQL

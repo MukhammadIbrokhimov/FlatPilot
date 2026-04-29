@@ -25,8 +25,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -90,6 +91,66 @@ class AlreadyAppliedError(RuntimeError):
     The CLI / dashboard surfaces this as a user-correctable error so a
     double-click or two open dashboards can't accidentally double-submit.
     """
+
+
+def acquire_apply_lock(conn, flat_id: int) -> None:
+    """Take a cross-process lock on ``flat_id``.
+
+    Two FlatPilot processes — typically the CLI ``flatpilot apply 42``
+    and the dashboard's ``POST /api/applications`` subprocess — racing
+    on the same flat must not both reach ``filler.fill(submit=True)``,
+    or the landlord receives two messages. The ``apply_locks`` table
+    has ``flat_id`` as PRIMARY KEY: ``INSERT`` from the second caller
+    raises ``sqlite3.IntegrityError`` and we surface it as
+    ``AlreadyAppliedError`` with a message distinct from the existing
+    "already has a submitted application" path.
+
+    Stale rows (acquired_at older than ``apply_timeout_sec() + 60``)
+    are reaped before the INSERT so a process crash (kill -9) doesn't
+    permanently block future applies for that flat. The buffer of 60s
+    on top of the apply timeout means we never reap a row that could
+    legitimately still be held by a slow apply. Reaping is bounded to
+    the target flat — siblings are left alone so parallel acquires for
+    different flats don't trip on each other.
+    """
+    threshold_ts = (
+        datetime.now(UTC) - timedelta(seconds=apply_timeout_sec() + 60)
+    ).isoformat()
+    conn.execute(
+        "DELETE FROM apply_locks WHERE flat_id = ? AND acquired_at < ?",
+        (flat_id, threshold_ts),
+    )
+    try:
+        conn.execute(
+            "INSERT INTO apply_locks (flat_id, acquired_at, pid) VALUES (?, ?, ?)",
+            (flat_id, datetime.now(UTC).isoformat(), os.getpid()),
+        )
+    except sqlite3.IntegrityError as exc:
+        existing = conn.execute(
+            "SELECT pid, acquired_at FROM apply_locks WHERE flat_id = ?",
+            (flat_id,),
+        ).fetchone()
+        if existing is not None:
+            msg = (
+                f"flat {flat_id} apply already in progress "
+                f"(pid={existing['pid']}, since {existing['acquired_at']})"
+            )
+        else:
+            # Race window: holder released between our INSERT failing
+            # and our SELECT. Bubble up rather than auto-retry inside an
+            # exception handler — a fresh user click is the explicit
+            # recovery path.
+            msg = f"flat {flat_id} apply already in progress (lock contention; please retry)"
+        raise AlreadyAppliedError(msg) from exc
+
+
+def release_apply_lock(conn, flat_id: int) -> None:
+    """Release the cross-process lock for ``flat_id``.
+
+    No-op if no row exists (e.g. the caller never successfully acquired,
+    or a stale-row sweep already reaped it). Always safe in a finally.
+    """
+    conn.execute("DELETE FROM apply_locks WHERE flat_id = ?", (flat_id,))
 
 
 ApplyStatus = Literal["submitted", "dry_run"]
@@ -167,53 +228,57 @@ def apply_to_flat(
             f"(application_id={existing['id']}); refusing to double-submit"
         )
 
+    acquire_apply_lock(conn, flat_id)
     try:
-        report = filler.fill(
-            listing_url=str(flat["listing_url"]),
-            message=message,
-            attachments=attachments,
-            submit=True,
-            screenshot_dir=screenshot_dir,
-        )
-    except FillError as exc:
-        application_id = _record_application(
-            conn,
-            profile=profile,
-            flat=flat,
-            message=message,
-            attachments=attachments,
-            status="failed",
-            notes=str(exc),
-        )
-        logger.warning(
-            "apply: flat_id=%d failed: %s (application_id=%d)",
-            flat_id,
-            exc,
-            application_id,
-        )
-        # Re-raise so the CLI / server caller can handle it (exit code,
-        # 5xx response, etc.). The row write above is the durable trail.
-        raise
-    else:
-        application_id = _record_application(
-            conn,
-            profile=profile,
-            flat=flat,
-            message=report.message_sent,
-            attachments=report.attachments_sent,
-            status="submitted",
-            notes=None,
-        )
-        logger.info(
-            "apply: flat_id=%d submitted (application_id=%d)",
-            flat_id,
-            application_id,
-        )
-        return ApplyOutcome(
-            status="submitted",
-            application_id=application_id,
-            fill_report=report,
-        )
+        try:
+            report = filler.fill(
+                listing_url=str(flat["listing_url"]),
+                message=message,
+                attachments=attachments,
+                submit=True,
+                screenshot_dir=screenshot_dir,
+            )
+        except FillError as exc:
+            application_id = _record_application(
+                conn,
+                profile=profile,
+                flat=flat,
+                message=message,
+                attachments=attachments,
+                status="failed",
+                notes=str(exc),
+            )
+            logger.warning(
+                "apply: flat_id=%d failed: %s (application_id=%d)",
+                flat_id,
+                exc,
+                application_id,
+            )
+            # Re-raise so the CLI / server caller can handle it (exit code,
+            # 5xx response, etc.). The row write above is the durable trail.
+            raise
+        else:
+            application_id = _record_application(
+                conn,
+                profile=profile,
+                flat=flat,
+                message=report.message_sent,
+                attachments=report.attachments_sent,
+                status="submitted",
+                notes=None,
+            )
+            logger.info(
+                "apply: flat_id=%d submitted (application_id=%d)",
+                flat_id,
+                application_id,
+            )
+            return ApplyOutcome(
+                status="submitted",
+                application_id=application_id,
+                fill_report=report,
+            )
+    finally:
+        release_apply_lock(conn, flat_id)
 
 
 def _record_application(

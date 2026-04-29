@@ -40,7 +40,11 @@ from urllib.parse import urlparse
 import flatpilot.fillers.wg_gesucht  # noqa: F401
 import flatpilot.schemas  # noqa: F401
 from flatpilot.applications import record_response, record_skip
-from flatpilot.apply import STALE_APPLY_BUFFER_SEC, apply_timeout_sec
+from flatpilot.apply import (
+    APPLY_LOCK_HELD_EXIT,
+    STALE_APPLY_BUFFER_SEC,
+    apply_timeout_sec,
+)
 from flatpilot.database import get_conn, init_db
 from flatpilot.profile import load_profile, profile_hash
 from flatpilot.view import generate_html
@@ -215,7 +219,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
         finally:
             with _inflight_lock:
                 _inflight_flats.pop(flat_id, None)
-        status = HTTPStatus.OK if result["ok"] else HTTPStatus.INTERNAL_SERVER_ERROR
+        # Map subprocess returncode to HTTP status.
+        #
+        # APPLY_LOCK_HELD_EXIT (4) means acquire_apply_lock raised
+        # ApplyLockHeldError because another FlatPilot process holds the
+        # cross-process lock for this flat — semantically "in progress,
+        # retry later" → 409 Conflict, mirroring the in-process
+        # _inflight_flats fast-path 409 above.
+        #
+        # The explicit returncode==4 branch is load-bearing: lock-held
+        # exits with ok=False, so the previous `OK if ok else 500`
+        # ternary mapped it to 500. Collapsing back to a binary ok/!ok
+        # shape silently regresses 409 → 500. None (subprocess timeout)
+        # and 1 (filler error, ProfileMissing, post-submit duplicate
+        # row, ...) both fall through to the 500 branch.
+        # FlatPilot-wsp.
+        if result["returncode"] == APPLY_LOCK_HELD_EXIT:
+            status = HTTPStatus.CONFLICT
+        elif result["ok"]:
+            status = HTTPStatus.OK
+        else:
+            status = HTTPStatus.INTERNAL_SERVER_ERROR
         self._send_json(status, result)
 
     def _read_json_body(self) -> dict | None:

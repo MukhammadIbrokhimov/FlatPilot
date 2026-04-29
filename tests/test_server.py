@@ -209,6 +209,77 @@ def test_post_apply_subprocess_failure_returns_500(tmp_db):
     assert "session expired" in payload["stdout_tail"]
 
 
+def test_post_apply_returncode_four_returns_409(tmp_db):
+    """Cross-process apply lock contention surfaces as HTTP 409.
+
+    When the spawned `flatpilot apply <id>` subprocess exits
+    APPLY_LOCK_HELD_EXIT (4) — i.e. acquire_apply_lock raised
+    ApplyLockHeldError because another FlatPilot process is mid-apply
+    on the same flat — the dashboard responds 409 ("apply already in
+    progress, retry later"), the same status the in-process
+    _inflight_flats fast-path returns. Without this mapping, the
+    response is 500, which is operationally misleading (500 means
+    "unexpected server error"; the apply subprocess behaved correctly).
+    FlatPilot-wsp.
+    """
+    from flatpilot.apply import APPLY_LOCK_HELD_EXIT
+
+    _seed_match_with_profile(tmp_db)
+    fake_result = {
+        "ok": False,
+        "stdout_tail": (
+            "flat 1 apply already in progress (pid=99999, "
+            "since 2026-04-29T10:00:00+00:00)"
+        ),
+        "returncode": APPLY_LOCK_HELD_EXIT,
+    }
+
+    with (
+        _running_server(tmp_db) as port,
+        patch("flatpilot.server._spawn_apply", return_value=fake_result),
+    ):
+        status, body = _post(
+            f"http://127.0.0.1:{port}/api/applications",
+            body=json.dumps({"flat_id": 1}).encode("utf-8"),
+        )
+
+    assert status == 409
+    payload = json.loads(body)
+    assert payload["ok"] is False
+    assert "apply already in progress" in payload["stdout_tail"]
+
+
+def test_post_apply_subprocess_timeout_still_returns_500(tmp_db):
+    """Regression: subprocess timeout (returncode is None on TimeoutExpired)
+    must keep returning 500, not 409.
+
+    `None == APPLY_LOCK_HELD_EXIT` is False so the fall-through is correct
+    today; this test pins the ordering so a future refactor that conflates
+    "no returncode" with "non-zero returncode" doesn't silently regress
+    timeout from 500 to 409.
+    """
+    _seed_match_with_profile(tmp_db)
+    fake_result = {
+        "ok": False,
+        "stdout_tail": "timed out after 180s\n<truncated playwright output>",
+        "returncode": None,
+    }
+
+    with (
+        _running_server(tmp_db) as port,
+        patch("flatpilot.server._spawn_apply", return_value=fake_result),
+    ):
+        status, body = _post(
+            f"http://127.0.0.1:{port}/api/applications",
+            body=json.dumps({"flat_id": 1}).encode("utf-8"),
+        )
+
+    assert status == 500
+    payload = json.loads(body)
+    assert payload["ok"] is False
+    assert "timed out" in payload["stdout_tail"]
+
+
 def test_post_apply_invalid_body_returns_400(tmp_db):
     _seed_match_with_profile(tmp_db)
     with _running_server(tmp_db) as port:

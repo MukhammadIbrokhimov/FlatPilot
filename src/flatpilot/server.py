@@ -151,7 +151,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 {"error": "no profile — run `flatpilot init` first"},
             )
             return
-        init_db()
         conn = get_conn()
         try:
             record_skip(conn, match_id=match_id, profile_hash=profile_hash(profile))
@@ -172,7 +171,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 {"error": "body must be {'status': str, 'response_text': str}"},
             )
             return
-        init_db()
         conn = get_conn()
         try:
             record_response(
@@ -217,7 +215,12 @@ def serve(
     Caller runs ``server.serve_forever()`` (blocks) and ``server.shutdown()``
     + ``server.server_close()`` for teardown. Returns the actually-bound
     port — useful when ``port=0`` was requested.
+
+    init_db() runs once here at startup so per-request handlers can
+    assume the schema exists. Failing fast at bind time also means a
+    broken SQLite path surfaces before the first user click.
     """
+    init_db()
     try:
         server = ThreadingHTTPServer((host, port), DashboardHandler)
     except OSError as exc:

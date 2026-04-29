@@ -51,6 +51,53 @@ def test_get_unknown_path_returns_404(tmp_db):
         assert exc_info.value.code == 404
 
 
+def test_init_db_runs_once_at_serve_startup_not_per_request(tmp_db):
+    """init_db must be called once when serve() binds, not per POST request.
+
+    Pre-fix _handle_skip and _handle_response each called init_db, so a
+    sequence of N writing requests called init_db N times. The hoist
+    moves the call into serve() startup so it runs exactly once.
+    """
+    from unittest.mock import patch
+
+    _seed_match_with_profile(tmp_db)
+    app_id = _seed_application(tmp_db)
+
+    # Patch the bound name `flatpilot.server.init_db` (server.py imports it
+    # `from flatpilot.database import ..., init_db`, so this is the reference
+    # the per-request handlers and serve() both reach).
+    with patch("flatpilot.server.init_db") as mock_init_db:
+        # serve() is what we expect to call init_db once at startup.
+        from flatpilot.server import serve
+
+        server, port = serve(host="127.0.0.1", port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            # One skip POST + one response POST — both used to call init_db.
+            match_id = tmp_db.execute(
+                "SELECT id FROM matches LIMIT 1"
+            ).fetchone()[0]
+            _post(f"http://127.0.0.1:{port}/api/matches/{match_id}/skip")
+            _post(
+                f"http://127.0.0.1:{port}/api/applications/{app_id}/response",
+                body=json.dumps(
+                    {"status": "rejected", "response_text": ""}
+                ).encode("utf-8"),
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    # serve() should have called init_db exactly once during startup.
+    # Per-request handlers must no longer call it.
+    assert mock_init_db.call_count == 1, (
+        f"expected init_db to be called once at serve() startup, "
+        f"got {mock_init_db.call_count} call(s)"
+    )
+
+
 def _post(url: str, body: bytes = b"") -> tuple[int, bytes]:
     req = urllib.request.Request(url, data=body, method="POST")
     try:

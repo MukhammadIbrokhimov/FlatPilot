@@ -511,3 +511,102 @@ def test_post_apply_releases_slot_when_spawn_raises(tmp_db):
         f"_inflight_flats was not cleaned up after spawn crash: "
         f"{server_mod._inflight_flats!r}"
     )
+
+
+def test_inflight_watchdog_clears_stale_slot_on_acquire(tmp_db, monkeypatch):
+    """A slot held longer than apply_timeout_sec() + 60 is auto-cleared.
+
+    Defense-in-depth: today _spawn_apply has a subprocess timeout so a
+    slot can't actually leak. But a future refactor that removes the
+    timeout, or an in-process apply path, could leave a slot held
+    forever. The check-on-acquire sweep ensures the dashboard
+    self-heals on the next request rather than requiring a restart.
+
+    The test seeds a stale slot directly into _inflight_flats (using
+    the dict shape introduced for da5) and asserts a fresh acquire
+    succeeds — i.e. the sweep ran, removed the stale entry, and the
+    new request was let through.
+    """
+    import time
+    from unittest.mock import patch
+
+    import flatpilot.server as server_mod
+
+    _seed_match_with_profile(tmp_db)
+
+    # Set a tight timeout so the watchdog threshold (timeout + 60) is
+    # short enough to step over with monkeypatched time.
+    monkeypatch.setenv("FLATPILOT_APPLY_TIMEOUT_SEC", "1")  # threshold = 61s
+
+    # Pre-seed a stale slot. The watchdog must reap it.
+    fake_now = time.monotonic()
+    server_mod._inflight_flats[1] = fake_now - 1000.0  # ~1000s old
+
+    fake_result = {"ok": True, "stdout_tail": "ok", "returncode": 0}
+
+    try:
+        with (
+            _running_server(tmp_db) as port,
+            patch("flatpilot.server._spawn_apply", return_value=fake_result),
+        ):
+            url = f"http://127.0.0.1:{port}/api/applications"
+            body = json.dumps({"flat_id": 1}).encode("utf-8")
+            status, _ = _post(url, body)
+
+        # The stale slot was reaped; the new request was let through to
+        # _spawn_apply (which we mocked) and succeeded.
+        assert status == 200
+    finally:
+        # Defensive: don't leak module-level state across tests.
+        server_mod._inflight_flats.clear()
+
+
+def test_inflight_watchdog_does_not_clear_fresh_slot(tmp_db, monkeypatch):
+    """A slot held for less than the threshold must NOT be reaped.
+
+    Defense against the watchdog over-reaping: a still-running apply
+    must hold its slot until it actually finishes. If the sweep was
+    too aggressive (e.g. wrong inequality, no buffer), the second
+    concurrent caller could slip through to _spawn_apply and double-
+    submit.
+
+    Tests the watchdog's fresh-slot branch directly: pre-seed a fresh
+    slot via dict assignment (this line raises TypeError on the
+    current set impl, which is why the test goes red against current
+    code), make a POST for the same flat_id, and assert 409 — proving
+    the fresh slot survived the sweep.
+    """
+    import time
+    from unittest.mock import patch
+
+    import flatpilot.server as server_mod
+
+    _seed_match_with_profile(tmp_db)
+
+    monkeypatch.setenv("FLATPILOT_APPLY_TIMEOUT_SEC", "60")  # threshold = 120s
+
+    # Seed a fresh slot — held just now, well within threshold. This
+    # line raises TypeError on the current `set[int]` impl, so the
+    # test goes red. After the dict[int, float] conversion + watchdog,
+    # this seeds the holder and the sweep leaves it alone.
+    fake_now = time.monotonic()
+    server_mod._inflight_flats[1] = fake_now  # held right now
+
+    fake_result = {"ok": True, "stdout_tail": "ok", "returncode": 0}
+
+    try:
+        with (
+            _running_server(tmp_db) as port,
+            patch("flatpilot.server._spawn_apply", return_value=fake_result),
+        ):
+            url = f"http://127.0.0.1:{port}/api/applications"
+            body = json.dumps({"flat_id": 1}).encode("utf-8")
+            status, _ = _post(url, body)
+
+        # Fresh slot survived the sweep — request gets 409, _spawn_apply
+        # is NOT invoked for this flat_id.
+        assert status == 409, (
+            f"fresh slot was incorrectly reaped — expected 409, got {status}"
+        )
+    finally:
+        server_mod._inflight_flats.clear()

@@ -31,6 +31,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -108,13 +109,27 @@ def _spawn_apply(flat_id: int) -> dict:
 # returns 409 immediately. The lock is per-flat (not global) so applies
 # to DIFFERENT flats still run in parallel.
 #
-# Scope. This closes the in-process race that causes the dashboard
-# double-click bug. The cross-process race (a CLI `flatpilot apply N`
-# running while the dashboard also applies to N) is rarer, partially
-# mitigated by apply_to_flat's existing AlreadyAppliedError SELECT/INSERT
-# check, and intentionally out of scope here.
+# Slots are tracked as flat_id -> monotonic acquire time so the
+# watchdog can reap orphaned slots on the next acquire. APPLY's
+# subprocess timeout already bounds _spawn_apply, so the dict can't
+# actually leak today; the watchdog is defense-in-depth against a
+# future refactor that removes the subprocess timeout or replaces
+# _spawn_apply with a genuinely-blocking in-process call.
+#
+# Cross-process race (CLI + dashboard on the same flat) is handled by
+# the apply_locks SQLite table — see flatpilot.apply.acquire_apply_lock.
 _inflight_lock = threading.Lock()
-_inflight_flats: set[int] = set()
+_inflight_flats: dict[int, float] = {}
+
+# Buffer above the apply subprocess timeout — same formula as the
+# apply_locks stale-row reaper. Pulling from apply_timeout_sec()
+# (which honors FLATPILOT_APPLY_TIMEOUT_SEC) keeps the watchdog and
+# the DB lock self-consistent.
+_INFLIGHT_WATCHDOG_BUFFER_SEC = 60
+
+
+def _inflight_watchdog_threshold_sec() -> float:
+    return apply_timeout_sec() + _INFLIGHT_WATCHDOG_BUFFER_SEC
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -162,10 +177,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         # Claim an in-flight slot for this flat. If another request is
-        # already applying to it, fail fast with 409 — don't queue, the
-        # caller will see the (eventually) submitted row on the next
-        # dashboard refresh.
+        # already applying to it (and the slot is fresh), fail fast with
+        # 409 — don't queue, the caller will see the (eventually)
+        # submitted row on the next dashboard refresh.
+        #
+        # Sweep stale slots first (held longer than apply_timeout +
+        # buffer) so a future code path that genuinely hangs doesn't
+        # block all subsequent applies for that flat until restart.
+        now = time.monotonic()
         with _inflight_lock:
+            threshold = _inflight_watchdog_threshold_sec()
+            stale = [
+                fid
+                for fid, acquired_at in _inflight_flats.items()
+                if now - acquired_at > threshold
+            ]
+            for fid in stale:
+                logger.warning(
+                    "apply: watchdog clearing stale in-flight slot for flat_id=%d",
+                    fid,
+                )
+                _inflight_flats.pop(fid, None)
             if flat_id in _inflight_flats:
                 self._send_json(
                     HTTPStatus.CONFLICT,
@@ -178,12 +210,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     },
                 )
                 return
-            _inflight_flats.add(flat_id)
+            _inflight_flats[flat_id] = now
         try:
             result = _spawn_apply(flat_id)
         finally:
             with _inflight_lock:
-                _inflight_flats.discard(flat_id)
+                _inflight_flats.pop(flat_id, None)
         status = HTTPStatus.OK if result["ok"] else HTTPStatus.INTERNAL_SERVER_ERROR
         self._send_json(status, result)
 

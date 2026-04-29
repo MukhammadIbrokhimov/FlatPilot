@@ -366,3 +366,145 @@ def test_spawn_apply_passes_timeout_to_subprocess_run():
     assert isinstance(timeout, (int, float)) and timeout > 0, (
         f"expected positive numeric timeout=, got {timeout!r}"
     )
+
+
+def test_post_apply_rejects_concurrent_request_for_same_flat(tmp_db):
+    """Two near-simultaneous applies for the same flat: one wins, one 409s.
+
+    Pre-fix both server threads called _spawn_apply, both subprocesses
+    passed apply_to_flat's status='submitted' check (because neither
+    had written yet), and the landlord received two messages. The fix
+    is a module-level lock + set[int] of in-flight flat_ids in
+    server.py: second concurrent POST for the same flat returns 409
+    immediately without spawning anything.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from unittest.mock import patch
+
+    _seed_match_with_profile(tmp_db)
+
+    in_spawn = threading.Event()
+    release = threading.Event()
+    spawn_calls: list[int] = []
+
+    def slow_spawn(flat_id):
+        spawn_calls.append(flat_id)
+        in_spawn.set()
+        # Block until the test releases — gives the second request a
+        # chance to collide with this one.
+        if not release.wait(timeout=5):
+            raise AssertionError(
+                "test never released the first spawn — "
+                "deadlock or test ordering bug"
+            )
+        return {"ok": True, "stdout_tail": f"applied {flat_id}", "returncode": 0}
+
+    body = json.dumps({"flat_id": 1}).encode("utf-8")
+
+    with (
+        _running_server(tmp_db) as port,
+        patch("flatpilot.server._spawn_apply", side_effect=slow_spawn),
+    ):
+        url = f"http://127.0.0.1:{port}/api/applications"
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f1 = ex.submit(_post, url, body)
+            try:
+                # Wait until the first request is locked-in inside _spawn_apply
+                # before firing the second — without this, the second might
+                # arrive before the first has claimed the in-flight slot,
+                # making the test order-dependent.
+                assert in_spawn.wait(timeout=2), (
+                    "first request never entered _spawn_apply"
+                )
+                f2 = ex.submit(_post, url, body)
+                # The second should be rejected fast with 409 — without
+                # the lock, f2 also enters slow_spawn and blocks until
+                # release, so f2.result(timeout=2) raises TimeoutError
+                # (the expected pre-fix failure mode).
+                r2 = f2.result(timeout=2)
+            finally:
+                release.set()
+            r1 = f1.result(timeout=10)
+
+    assert r2[0] == 409, (
+        f"expected 409 for concurrent apply, got {r2[0]}: {r2[1]!r}"
+    )
+    assert r1[0] == 200, (
+        f"expected 200 for first apply, got {r1[0]}: {r1[1]!r}"
+    )
+    # The second request must NOT have spawned — the lock rejects before
+    # _spawn_apply is even called.
+    assert spawn_calls == [1], (
+        f"expected exactly one spawn (the winner), got {spawn_calls}"
+    )
+
+
+def test_post_apply_releases_slot_after_completion_so_retry_succeeds(tmp_db):
+    """After the first apply finishes, a fresh apply for the same flat goes through.
+
+    Guards against a finally-clause regression that would leak slots in
+    the in-flight set, blocking all future applies for that flat.
+    """
+    from unittest.mock import patch
+
+    _seed_match_with_profile(tmp_db)
+
+    fake_result = {"ok": True, "stdout_tail": "ok", "returncode": 0}
+
+    with (
+        _running_server(tmp_db) as port,
+        patch("flatpilot.server._spawn_apply", return_value=fake_result),
+    ):
+        url = f"http://127.0.0.1:{port}/api/applications"
+        body = json.dumps({"flat_id": 1}).encode("utf-8")
+        first = _post(url, body)
+        second = _post(url, body)
+
+    assert first[0] == 200
+    assert second[0] == 200, (
+        f"expected sequential applies to both succeed (slot released), "
+        f"got {second[0]}: {second[1]!r}"
+    )
+
+
+def test_post_apply_releases_slot_when_spawn_raises(tmp_db):
+    """If _spawn_apply itself raises, the in-flight slot must still be released.
+
+    Otherwise a one-time bug or kill -9 would permanently block applies
+    to that flat until the server restarts. We assert on
+    ``flatpilot.server._inflight_flats`` directly because
+    ``BaseHTTPRequestHandler`` does NOT translate handler exceptions into
+    a 5xx — the connection drops mid-response and any HTTP-level
+    assertion would observe ``RemoteDisconnected``/``URLError``, masking
+    the actual finally-release we care about.
+    """
+    from unittest.mock import patch
+
+    import flatpilot.server as server_mod
+
+    _seed_match_with_profile(tmp_db)
+
+    def crashing_spawn(flat_id):
+        raise RuntimeError("simulated spawn crash")
+
+    with (
+        _running_server(tmp_db) as port,
+        patch("flatpilot.server._spawn_apply", side_effect=crashing_spawn),
+    ):
+        url = f"http://127.0.0.1:{port}/api/applications"
+        body = json.dumps({"flat_id": 1}).encode("utf-8")
+        # The crash inside _handle_apply causes the request thread to
+        # propagate the exception and BaseHTTPRequestHandler closes the
+        # socket without a structured response. We don't care which
+        # connection error urllib surfaces — we care that _inflight_flats
+        # is empty afterwards.
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            _post(url, body)
+
+    assert 1 not in server_mod._inflight_flats, (
+        f"_inflight_flats was not cleaned up after spawn crash: "
+        f"{server_mod._inflight_flats!r}"
+    )

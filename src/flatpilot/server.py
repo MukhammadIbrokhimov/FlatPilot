@@ -30,6 +30,7 @@ import logging
 import re
 import subprocess
 import sys
+import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -101,6 +102,28 @@ def _spawn_apply(flat_id: int) -> dict:
     }
 
 
+# Per-flat concurrency control for the Apply path.
+#
+# The dashboard's POST /api/applications endpoint shells out to
+# `flatpilot apply <flat_id>` via _spawn_apply. Two near-simultaneous
+# POSTs for the same flat (e.g. a double-click) used to fork two
+# subprocesses; both passed apply_to_flat's status='submitted' check and
+# the landlord received two messages.
+#
+# The lock here serializes the two server threads BEFORE either
+# subprocess is spawned. Second concurrent caller for the same flat_id
+# returns 409 immediately. The lock is per-flat (not global) so applies
+# to DIFFERENT flats still run in parallel.
+#
+# Scope. This closes the in-process race that causes the dashboard
+# double-click bug. The cross-process race (a CLI `flatpilot apply N`
+# running while the dashboard also applies to N) is rarer, partially
+# mitigated by apply_to_flat's existing AlreadyAppliedError SELECT/INSERT
+# check, and intentionally out of scope here.
+_inflight_lock = threading.Lock()
+_inflight_flats: set[int] = set()
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     """HTTP handler serving the dashboard and its mutation endpoints."""
 
@@ -144,7 +167,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 {"error": "request body must be {'flat_id': <int>}"},
             )
             return
-        result = _spawn_apply(flat_id)
+
+        # Claim an in-flight slot for this flat. If another request is
+        # already applying to it, fail fast with 409 — don't queue, the
+        # caller will see the (eventually) submitted row on the next
+        # dashboard refresh.
+        with _inflight_lock:
+            if flat_id in _inflight_flats:
+                self._send_json(
+                    HTTPStatus.CONFLICT,
+                    {
+                        "ok": False,
+                        "error": (
+                            f"apply already in progress for flat {flat_id}; "
+                            "wait for it to finish"
+                        ),
+                    },
+                )
+                return
+            _inflight_flats.add(flat_id)
+        try:
+            result = _spawn_apply(flat_id)
+        finally:
+            with _inflight_lock:
+                _inflight_flats.discard(flat_id)
         status = HTTPStatus.OK if result["ok"] else HTTPStatus.INTERNAL_SERVER_ERROR
         self._send_json(status, result)
 

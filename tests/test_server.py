@@ -297,3 +297,72 @@ def test_post_response_unknown_id_returns_404(tmp_db):
     assert status == 404
     data = json.loads(body)
     assert "no application with id 9999" in data["error"]
+
+
+def test_spawn_apply_returns_structured_error_on_subprocess_timeout(tmp_db):
+    """A hung 'flatpilot apply' subprocess must surface as ok=False, not raise.
+
+    Pre-fix _spawn_apply called subprocess.run with no timeout — a stuck
+    Playwright would hang the entire dashboard server thread. This test
+    monkeypatches subprocess.run to raise TimeoutExpired and asserts the
+    function returns the structured error shape the dashboard handler
+    expects.
+    """
+    import subprocess
+    from unittest.mock import patch
+
+    from flatpilot.server import _spawn_apply
+
+    fake_stdout = "starting apply for flat 42\nlogged in, opening listing\n"
+    fake_stderr = ""
+
+    def raise_timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd=args[0] if args else kwargs.get("args", []),
+            timeout=kwargs.get("timeout", 180),
+            output=fake_stdout,
+            stderr=fake_stderr,
+        )
+
+    with patch("flatpilot.server.subprocess.run", side_effect=raise_timeout):
+        result = _spawn_apply(42)
+
+    assert result["ok"] is False
+    assert result["returncode"] is None
+    assert "timed out" in result["stdout_tail"].lower()
+    # Captured-before-timeout output should still surface so the user
+    # sees how far the apply got.
+    assert "logged in" in result["stdout_tail"]
+
+
+def test_spawn_apply_passes_timeout_to_subprocess_run():
+    """_spawn_apply must pass a finite timeout= keyword to subprocess.run.
+
+    Guards against the function silently going back to no-timeout. We
+    record the kwargs subprocess.run is called with and assert a
+    positive numeric timeout was set. No DB needed — the function only
+    talks to subprocess.run.
+    """
+    from unittest.mock import patch
+
+    from flatpilot.server import _spawn_apply
+
+    captured_kwargs: dict = {}
+
+    def fake_run(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        class _Done:
+            returncode = 0
+            stdout = "ok"
+            stderr = ""
+
+        return _Done()
+
+    with patch("flatpilot.server.subprocess.run", side_effect=fake_run):
+        result = _spawn_apply(42)
+
+    assert result["ok"] is True
+    timeout = captured_kwargs.get("timeout")
+    assert isinstance(timeout, (int, float)) and timeout > 0, (
+        f"expected positive numeric timeout=, got {timeout!r}"
+    )

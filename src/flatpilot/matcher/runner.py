@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from typing import TypedDict
 
 from flatpilot.database import get_conn, init_db
+from flatpilot.errors import ProfileMissingError
 from flatpilot.matcher.filters import evaluate
 from flatpilot.profile import load_profile, profile_hash
 
@@ -31,10 +32,6 @@ class MatchSummary(TypedDict):
     match: int
     reject: int
     profile_hash: str
-
-
-class ProfileMissingError(RuntimeError):
-    """Raised when ``flatpilot match`` runs before ``flatpilot init``."""
 
 
 def run_match() -> MatchSummary:

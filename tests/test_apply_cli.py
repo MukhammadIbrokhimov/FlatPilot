@@ -7,8 +7,9 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from flatpilot.apply import ApplyOutcome, ProfileMissingError
+from flatpilot.apply import ApplyOutcome
 from flatpilot.cli import app
+from flatpilot.errors import ProfileMissingError
 from flatpilot.fillers.base import FillReport, NotAuthenticatedError
 
 

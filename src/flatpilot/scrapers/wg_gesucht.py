@@ -26,6 +26,7 @@ from collections.abc import Iterable
 from typing import Any, ClassVar
 from urllib.parse import quote, urljoin
 
+from flatpilot.errors import UnknownCityError
 from flatpilot.profile import Profile
 from flatpilot.scrapers import register
 from flatpilot.scrapers.base import Flat
@@ -91,10 +92,6 @@ _RENT_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*€")
 _SIZE_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*m²")
 _ROOMS_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*-?\s*Zimmer", re.IGNORECASE)
 _DATE_RE = re.compile(r"\b(\d{2})\.(\d{2})\.(\d{4})\b")
-
-
-class UnknownCityError(ValueError):
-    """Profile city has no WG-Gesucht city_id mapped."""
 
 
 @register

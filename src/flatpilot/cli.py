@@ -18,11 +18,11 @@ from rich import print as rprint
 from flatpilot.apply import (
     AlreadyAppliedError,
     ApplyOutcome,
-    ProfileMissingError,
     apply_to_flat,
 )
 from flatpilot.attachments import AttachmentError
 from flatpilot.compose import TemplateError
+from flatpilot.errors import ProfileMissingError
 from flatpilot.fillers.base import FillError
 
 app = typer.Typer(
@@ -426,7 +426,8 @@ def match() -> None:
     """Apply the matcher to unmatched listings and write matches."""
     from rich.console import Console
 
-    from flatpilot.matcher.runner import ProfileMissingError, run_match
+    from flatpilot.errors import ProfileMissingError
+    from flatpilot.matcher.runner import run_match
 
     console = Console()
     try:

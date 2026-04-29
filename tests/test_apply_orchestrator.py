@@ -246,7 +246,7 @@ def test_apply_missing_attachment_raises_no_row(tmp_db, tmp_path, monkeypatch):
 
 
 def test_apply_no_profile_raises(tmp_db, tmp_path, monkeypatch):
-    from flatpilot.apply import ProfileMissingError
+    from flatpilot.errors import ProfileMissingError
 
     _write_template(tmp_path)
     flat_id = _insert_flat(tmp_db)

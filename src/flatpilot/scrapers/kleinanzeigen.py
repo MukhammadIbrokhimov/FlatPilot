@@ -34,6 +34,7 @@ from collections.abc import Iterable
 from typing import Any, ClassVar
 from urllib.parse import urljoin
 
+from flatpilot.errors import UnknownCityError
 from flatpilot.profile import Profile
 from flatpilot.scrapers import register
 from flatpilot.scrapers.base import Flat
@@ -84,10 +85,6 @@ _SIZE_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*m²")
 # Kleinanzeigen cards use "2 Zi.", "3 Zi.", or occasionally "3-Zimmer".
 _ROOMS_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:Zi\.?|Zimmer)", re.IGNORECASE)
 _PLZ_DISTRICT_RE = re.compile(r"^(\d{5})\s+(.+)$")
-
-
-class UnknownCityError(ValueError):
-    """Profile city has no Kleinanzeigen location ID mapped."""
 
 
 @register

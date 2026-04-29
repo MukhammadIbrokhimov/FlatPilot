@@ -36,15 +36,12 @@ import flatpilot.fillers.wg_gesucht  # noqa: F401
 from flatpilot.attachments import resolve_for_platform
 from flatpilot.compose import compose_anschreiben
 from flatpilot.database import get_conn, init_db
+from flatpilot.errors import ProfileMissingError
 from flatpilot.fillers import get_filler
 from flatpilot.fillers.base import FillError, FillReport
 from flatpilot.profile import Profile, load_profile
 
 logger = logging.getLogger(__name__)
-
-
-class ProfileMissingError(RuntimeError):
-    """Raised when ``apply_to_flat`` runs before ``flatpilot init``."""
 
 
 class AlreadyAppliedError(RuntimeError):

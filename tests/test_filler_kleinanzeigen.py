@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
+from flatpilot.fillers import get_filler
 from flatpilot.fillers.base import (
     NotAuthenticatedError,
     SelectorMissingError,
@@ -280,3 +281,12 @@ def test_fill_login_redirect_raises_not_authenticated(fake_session):
             attachments=[],
             submit=False,
         )
+
+
+def test_kleinanzeigen_filler_is_registered():
+    # Locks the registry seed against a future "tidy the imports" pass
+    # that drops `import flatpilot.fillers.kleinanzeigen` from
+    # apply.py. Without that import the registry is empty for
+    # kleinanzeigen and `flatpilot apply` on a Kleinanzeigen flat
+    # raises KeyError — the original bug closed by this PR.
+    assert get_filler("kleinanzeigen") is KleinanzeigenFiller

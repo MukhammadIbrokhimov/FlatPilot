@@ -70,9 +70,14 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class _Selectors:
-    # Trigger button on the listing page that reveals the modal form
-    # for authenticated users; for unauthenticated users the same id
-    # raises a login modal — _guard_login redirects those flows first.
+    # Trigger button observed on the unauthenticated DOM. The
+    # `-login-modal` id suffix is suggestive: the same button may open
+    # a login modal for anonymous users and the contact form for
+    # authenticated users, OR the authenticated DOM may expose a
+    # different id entirely. Empirical verification against a real
+    # logged-in session is tracked as a follow-up bead — same policy
+    # FlatPilot-fze established for the WG-Gesucht filler. Mismatch
+    # surfaces as FormNotFoundError (loud), not silent message drops.
     contact_trigger: str = "button#viewad-contact-button-login-modal"
     form: str = "form#viewad-contact-modal-form"
     message_input: str = (

@@ -22,5 +22,30 @@
         "matcher": ""
       }
     ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(bd show *)",
+      "Bash(bd list *)",
+      "Bash(bd ready)",
+      "Bash(bd ready *)",
+      "Bash(bd stats)",
+      "Bash(bd stats *)",
+      "Bash(bd search *)",
+      "Bash(bd memories *)",
+      "Bash(bd export *)",
+      "Bash(pytest -q)",
+      "Bash(pytest -v)",
+      "Bash(pytest tests/*)",
+      "Bash(.venv/bin/pytest -q)",
+      "Bash(.venv/bin/pytest -v)",
+      "Bash(.venv/bin/pytest tests/*)",
+      "Bash(ruff check src)",
+      "Bash(ruff check tests)",
+      "Bash(ruff check src tests)",
+      "Bash(.venv/bin/ruff check src)",
+      "Bash(.venv/bin/ruff check tests)",
+      "Bash(.venv/bin/ruff check src tests)"
+    ]
   }
 }

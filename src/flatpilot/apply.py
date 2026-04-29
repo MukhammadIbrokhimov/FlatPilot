@@ -31,6 +31,7 @@ from typing import Literal
 
 # Force the filler registry to populate before apply_to_flat runs.
 # init_db() handles the schemas import internally.
+import flatpilot.fillers.kleinanzeigen  # noqa: F401
 import flatpilot.fillers.wg_gesucht  # noqa: F401
 from flatpilot.attachments import resolve_for_platform
 from flatpilot.compose import compose_anschreiben

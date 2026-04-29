@@ -56,6 +56,15 @@ DEFAULT_APPLY_TIMEOUT_SEC = 180
 # schedule.
 STALE_APPLY_BUFFER_SEC = 60
 
+# Exit code emitted by `flatpilot apply` when the cross-process
+# apply_locks lock for the target flat is already held by another
+# process. The dashboard's _handle_apply maps this returncode to
+# HTTP 409 (Conflict) — semantically "apply already in progress,
+# retry later" — instead of the generic 500. Exit 1 stays reserved
+# for everything else (post-submit duplicate row, FillError,
+# ProfileMissingError, AttachmentError, TemplateError). FlatPilot-wsp.
+APPLY_LOCK_HELD_EXIT = 4
+
 
 def apply_timeout_sec() -> int:
     """Resolve the per-call apply subprocess timeout.
@@ -99,6 +108,26 @@ class AlreadyAppliedError(RuntimeError):
     rows mean we sent the landlord two messages — almost always a mistake.
     The CLI / dashboard surfaces this as a user-correctable error so a
     double-click or two open dashboards can't accidentally double-submit.
+    """
+
+
+class ApplyLockHeldError(AlreadyAppliedError):
+    """Raised by :func:`acquire_apply_lock` when the cross-process lock
+    for ``flat_id`` is already held by another process.
+
+    Subclasses :class:`AlreadyAppliedError` so existing
+    ``except AlreadyAppliedError`` and
+    ``pytest.raises(AlreadyAppliedError, ...)`` callsites keep matching.
+    The CLI uses this discrimination to exit ``APPLY_LOCK_HELD_EXIT``
+    (4) instead of 1, which the dashboard's ``_handle_apply`` maps to
+    HTTP 409 instead of 500.
+
+    The post-submit duplicate-row path in :func:`apply_to_flat`
+    intentionally keeps raising plain :class:`AlreadyAppliedError` —
+    that case is a logically-completed application (not a transient
+    contention), and exit 1 / HTTP 500 is the correct surface (the
+    user should not retry). Promoting that raise to this subclass
+    would be a behavioral regression. FlatPilot-wsp.
     """
 
 
@@ -151,7 +180,7 @@ def acquire_apply_lock(conn, flat_id: int) -> None:
             # exception handler — a fresh user click is the explicit
             # recovery path.
             msg = f"flat {flat_id} apply already in progress (lock contention; please retry)"
-        raise AlreadyAppliedError(msg) from exc
+        raise ApplyLockHeldError(msg) from exc
 
 
 def release_apply_lock(conn, flat_id: int) -> None:

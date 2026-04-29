@@ -49,6 +49,19 @@ def test_check_platform_cookies_unreadable_returns_optional(tmp_db):
     assert "unreadable" in detail
 
 
+def test_check_platform_cookies_handles_malformed_cookies_field(tmp_db):
+    # Syntactically-valid JSON but `cookies` is null / a non-list — a
+    # ``dict.get(default)`` does NOT fall back on present-but-wrong
+    # values, so naive iteration would crash on the file the doctor
+    # was invoked to diagnose. Verify every shape returns a tuple.
+    path = session_dir("wg-gesucht") / "state.json"
+    for payload in ('{"cookies": null}', '{"cookies": 5}', '{"cookies": "nope"}'):
+        path.write_text(payload)
+        status, detail = doctor._check_platform_cookies("wg-gesucht")
+        assert status == "optional"
+        assert "session-only cookies" in detail
+
+
 def test_check_platform_cookies_expired_returns_optional(tmp_db):
     past = (datetime.now(UTC) - timedelta(days=2)).timestamp()
     _write_state("wg-gesucht", expires_unix=[past])

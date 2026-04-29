@@ -155,7 +155,12 @@ def _check_platform_cookies(platform: str) -> tuple[str, str]:
     except (OSError, json.JSONDecodeError):
         return "optional", "session state unreadable"
 
-    cookies = state.get("cookies", []) if isinstance(state, dict) else []
+    raw_cookies = state.get("cookies", []) if isinstance(state, dict) else []
+    # ``state["cookies"]`` may be ``null`` or a non-list type in a corrupted
+    # file; ``dict.get(default)`` only fires on missing keys, not on
+    # present-but-wrong values. Iterating ``None`` would otherwise crash
+    # the doctor on the exact pathology it's supposed to diagnose.
+    cookies = raw_cookies if isinstance(raw_cookies, list) else []
     expiries = [
         c["expires"]
         for c in cookies

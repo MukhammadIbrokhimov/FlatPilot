@@ -74,6 +74,11 @@ flatpilot dashboard                   # open HTML dashboard of matches
 flatpilot status                      # DB counts and last-run info
 ```
 
+## Configuration
+
+- `FLATPILOT_APPLY_TIMEOUT_SEC` (default `180`) — caps the dashboard's `flatpilot apply <id>` subprocess. Bump for slow Playwright runs (large attachments, slow networks).
+- `POST /api/applications` returns **HTTP 409** with the message _"Apply already in progress — retry shortly"_ when another FlatPilot process is already applying to the same flat (in-process double-click guard or cross-process race against a CLI invocation). Safe to retry.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

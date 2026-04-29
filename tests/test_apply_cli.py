@@ -89,3 +89,48 @@ def test_apply_no_profile_exit_one():
 
     assert result.exit_code == 1
     assert "No profile" in result.output
+
+
+def test_apply_lock_held_error_exits_apply_lock_held_exit():
+    """Lock contention exits APPLY_LOCK_HELD_EXIT (4), not 1.
+
+    The dashboard's _handle_apply translates this returncode to HTTP 409.
+    Direct CLI users see a yellow message + exit 4 they can branch on.
+    """
+    from flatpilot.apply import APPLY_LOCK_HELD_EXIT, ApplyLockHeldError
+
+    runner = CliRunner()
+    with patch(
+        "flatpilot.cli.apply_to_flat",
+        side_effect=ApplyLockHeldError(
+            "flat 5 apply already in progress (pid=12345, since 2026-04-29T10:00:00+00:00)"
+        ),
+    ):
+        result = runner.invoke(app, ["apply", "5"])
+
+    assert result.exit_code == APPLY_LOCK_HELD_EXIT == 4, result.output
+    assert "apply already in progress" in result.output
+
+
+def test_apply_plain_already_applied_error_still_exits_one():
+    """Regression: the post-submit duplicate-row path keeps exit 1.
+
+    Two AlreadyAppliedError causes have intentionally different exit
+    codes (and HTTP statuses): the lock-contention case is transient
+    (retry-able, 409); the duplicate-row case is terminal (do-not-retry,
+    500). Don't conflate them.
+    """
+    from flatpilot.apply import AlreadyAppliedError
+
+    runner = CliRunner()
+    with patch(
+        "flatpilot.cli.apply_to_flat",
+        side_effect=AlreadyAppliedError(
+            "flat 5 already has a submitted application (application_id=42); "
+            "refusing to double-submit"
+        ),
+    ):
+        result = runner.invoke(app, ["apply", "5"])
+
+    assert result.exit_code == 1, result.output
+    assert "already has a submitted application" in result.output

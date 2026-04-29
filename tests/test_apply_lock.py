@@ -414,3 +414,50 @@ def test_concurrent_apply_lock_across_processes(tmp_db):
             proc.join(timeout=2)
             pytest.fail("child process did not exit cleanly")
     assert proc.exitcode == 0, f"child exited with {proc.exitcode}"
+
+
+# --------------------------------------------------------------------------- #
+# FlatPilot-wsp: subclass + constant for HTTP-409 disambiguation.
+# acquire_apply_lock raises ApplyLockHeldError (a subclass of
+# AlreadyAppliedError) so cli.py can exit APPLY_LOCK_HELD_EXIT (4) and
+# server._handle_apply can map that returncode to HTTP 409. The post-submit
+# duplicate-row path in apply_to_flat is unaffected — see
+# test_apply_orchestrator.py for that pin.
+# --------------------------------------------------------------------------- #
+
+
+def test_apply_lock_held_exit_constant_is_four():
+    """APPLY_LOCK_HELD_EXIT is the exit code cli.py emits on lock contention.
+
+    The HTTP layer in server._handle_apply maps returncode == APPLY_LOCK_HELD_EXIT
+    to HTTP 409. A silent change to this value is a silent dashboard regression
+    — pin it.
+    """
+    from flatpilot.apply import APPLY_LOCK_HELD_EXIT
+
+    assert APPLY_LOCK_HELD_EXIT == 4
+
+
+def test_acquire_apply_lock_raises_apply_lock_held_error_subclass(tmp_db):
+    """Lock contention surfaces as ApplyLockHeldError, not just AlreadyAppliedError.
+
+    Disambiguates from the post-submit duplicate-row path (which keeps
+    raising plain AlreadyAppliedError). The subclass MUST still be an
+    instance of AlreadyAppliedError so existing `except AlreadyAppliedError`
+    callers and `pytest.raises(AlreadyAppliedError, ...)` assertions
+    keep working unchanged.
+    """
+    from flatpilot.apply import (
+        AlreadyAppliedError,
+        ApplyLockHeldError,
+        acquire_apply_lock,
+    )
+
+    acquire_apply_lock(tmp_db, flat_id=42)
+    with pytest.raises(ApplyLockHeldError) as exc_info:
+        acquire_apply_lock(tmp_db, flat_id=42)
+
+    # Subclass identity preserved.
+    assert isinstance(exc_info.value, AlreadyAppliedError)
+    # Existing message contract from test_acquire_second_call_raises_in_progress_message.
+    assert "apply already in progress" in str(exc_info.value)

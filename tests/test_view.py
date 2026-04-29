@@ -212,3 +212,19 @@ def test_responses_pane_renders_form_per_application(tmp_db):
     pane_form_segment = pane[pane.index("form"):pane.index("</form>")]
     assert 'value="submitted"' not in pane_form_segment
     assert 'value="failed"' not in pane_form_segment
+
+
+def test_apply_toast_renders_409_as_apply_already_in_progress(tmp_db):
+    """The Apply button's toast distinguishes HTTP 409 (lock contention,
+    retry-able) from generic failures. Both 409 paths — in-process
+    _inflight_flats double-click and cross-process apply_locks contention
+    via subprocess returncode 4 — render the same retry-friendly message
+    instead of the misleading "Apply failed: ..." that pre-FlatPilot-b60
+    code surfaced for any non-2xx.
+    """
+    html = generate_html(tmp_db)
+    # The JS branches on resp.status === 409 before falling through to
+    # the generic failure path. Pin the branch and the user-visible
+    # wording.
+    assert "resp.status === 409" in html
+    assert "Apply already in progress" in html

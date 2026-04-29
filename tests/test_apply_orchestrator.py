@@ -254,3 +254,42 @@ def test_apply_no_profile_raises(tmp_db, tmp_path, monkeypatch):
 
     with pytest.raises(ProfileMissingError):
         apply_to_flat(flat_id, dry_run=False)
+
+
+def test_double_submit_raises_plain_already_applied_not_subclass(tmp_db, tmp_path, monkeypatch):
+    """Regression pin: the post-submit duplicate-row path raises PLAIN
+    AlreadyAppliedError, NOT the ApplyLockHeldError subclass.
+
+    The two raise sites in apply.py have semantically different meanings
+    that drive different HTTP statuses:
+
+    * acquire_apply_lock contention      → ApplyLockHeldError → exit 4 → HTTP 409
+    * post-submit duplicate-row check    → AlreadyAppliedError → exit 1 → HTTP 500
+
+    Promoting the duplicate-row raise to the subclass would silently flip
+    its dashboard mapping to 409 ("retry later"), which is wrong — a
+    completed application should NOT be retried.
+    """
+    from flatpilot.apply import (
+        AlreadyAppliedError,
+        ApplyLockHeldError,
+        apply_to_flat,
+    )
+
+    _profile_for_test(tmp_path)
+    _write_template(tmp_path)
+    flat_id = _insert_flat(tmp_db)
+    _stub_filler(monkeypatch, submitted=True)
+
+    # First apply lands the submitted row.
+    apply_to_flat(flat_id, dry_run=False)
+
+    # Second apply must raise the parent class, NOT the subclass.
+    with pytest.raises(AlreadyAppliedError) as exc_info:
+        apply_to_flat(flat_id, dry_run=False)
+
+    assert not isinstance(exc_info.value, ApplyLockHeldError), (
+        "post-submit duplicate-row path must raise plain AlreadyAppliedError; "
+        "promoting it to ApplyLockHeldError would flip HTTP 500 → 409 silently"
+    )
+    assert f"flat {flat_id} already has" in str(exc_info.value)

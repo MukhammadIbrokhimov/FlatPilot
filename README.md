@@ -74,6 +74,11 @@ flatpilot dashboard                   # open HTML dashboard of matches
 flatpilot status                      # DB counts and last-run info
 ```
 
+## Scraping behaviour
+
+- **inberlinwohnen.de** paginates from page 1 onwards. On a fresh install, `flatpilot scrape --platform inberlinwohnen` walks the full Wohnungsfinder feed (~22 pages, ~220 listings today) so you don't miss older inventory. In steady state, the scraper stops after page 1 once every listing on it is already in the local DB — typically one page-fetch per pass. A safety cap of 30 pages bounds the worst case.
+- **WG-Gesucht** and **Kleinanzeigen** read page 1 only — new listings surface there, and steady-state polling is the primary use case.
+
 ## Configuration
 
 - `FLATPILOT_APPLY_TIMEOUT_SEC` (default `180`) — caps the dashboard's `flatpilot apply <id>` subprocess. Bump for slow Playwright runs (large attachments, slow networks).

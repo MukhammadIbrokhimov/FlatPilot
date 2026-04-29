@@ -585,6 +585,16 @@ def _render(
         if (resp.ok && data.ok) {{
           window.flatpilotToast('Applied successfully');
           btn.textContent = 'Applied ✓';
+        }} else if (resp.status === 409) {{
+          // Both 409 paths — the in-process _inflight_flats double-click
+          // guard and the cross-process apply_locks contention surfaced
+          // via subprocess returncode 4 (FlatPilot-wsp) — mean another
+          // apply for this flat is mid-flight. Tell the user to wait,
+          // not that the apply "failed". Payload shape differs between
+          // paths; the wording is the same. FlatPilot-b60.
+          window.flatpilotToast('Apply already in progress — retry shortly', true);
+          btn.textContent = originalText;
+          btn.disabled = false;
         }} else {{
           const msg = data.stdout_tail || data.error || resp.status;
           window.flatpilotToast('Apply failed: ' + msg, true);

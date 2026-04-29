@@ -31,6 +31,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
@@ -39,17 +40,12 @@ from urllib.parse import urlparse
 import flatpilot.fillers.wg_gesucht  # noqa: F401
 import flatpilot.schemas  # noqa: F401
 from flatpilot.applications import record_response, record_skip
+from flatpilot.apply import STALE_APPLY_BUFFER_SEC, apply_timeout_sec
 from flatpilot.database import get_conn, init_db
 from flatpilot.profile import load_profile, profile_hash
 from flatpilot.view import generate_html
 
 logger = logging.getLogger(__name__)
-
-# Upper bound on a single dashboard-spawned `flatpilot apply` subprocess.
-# A real headed Playwright apply (load + login + fill + submit + screenshot)
-# typically takes 20-60s; 180s gives margin for slow networks and one
-# CAPTCHA-equivalent prompt while still bounding dashboard hang.
-APPLY_TIMEOUT_SEC = 180
 
 DEFAULT_PORT = 8765
 
@@ -65,28 +61,26 @@ def _spawn_apply(flat_id: int) -> dict:
     the browser. Stdout is tail-trimmed to ~2 KB so a verbose Playwright
     log doesn't bloat the JSON response.
 
-    Bounded by ``APPLY_TIMEOUT_SEC``: a hung child (e.g. Playwright stuck
+    Bounded by ``apply_timeout_sec()`` (default 180s, override via
+    ``FLATPILOT_APPLY_TIMEOUT_SEC``): a hung child (e.g. Playwright stuck
     on a CAPTCHA wait) is killed and surfaced as ``ok=False`` with the
     captured-so-far output, so the dashboard thread is freed.
 
     Patched in tests so we don't actually invoke the CLI.
     """
+    timeout_sec = apply_timeout_sec()
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "flatpilot", "apply", str(flat_id)],
             capture_output=True,
             text=True,
             check=False,
-            timeout=APPLY_TIMEOUT_SEC,
+            timeout=timeout_sec,
         )
     except subprocess.TimeoutExpired as exc:
         captured = (exc.stdout or "") + (exc.stderr or "")
-        # subprocess.run with text=True normally yields str; defend against
-        # the bytes path just in case a caller passed text=False.
-        if isinstance(captured, bytes):
-            captured = captured.decode("utf-8", errors="replace")
         tail_body = captured[-2000:].strip()
-        prefix = f"timed out after {APPLY_TIMEOUT_SEC}s"
+        prefix = f"timed out after {timeout_sec}s"
         tail = f"{prefix}\n{tail_body}".strip() if tail_body else prefix
         return {
             "ok": False,
@@ -115,13 +109,23 @@ def _spawn_apply(flat_id: int) -> dict:
 # returns 409 immediately. The lock is per-flat (not global) so applies
 # to DIFFERENT flats still run in parallel.
 #
-# Scope. This closes the in-process race that causes the dashboard
-# double-click bug. The cross-process race (a CLI `flatpilot apply N`
-# running while the dashboard also applies to N) is rarer, partially
-# mitigated by apply_to_flat's existing AlreadyAppliedError SELECT/INSERT
-# check, and intentionally out of scope here.
+# Slots are tracked as flat_id -> monotonic acquire time so the
+# watchdog can reap orphaned slots on the next acquire. APPLY's
+# subprocess timeout already bounds _spawn_apply, so the dict can't
+# actually leak today; the watchdog is defense-in-depth against a
+# future refactor that removes the subprocess timeout or replaces
+# _spawn_apply with a genuinely-blocking in-process call.
+#
+# Cross-process race (CLI + dashboard on the same flat) is handled by
+# the apply_locks SQLite table — see flatpilot.apply.acquire_apply_lock.
 _inflight_lock = threading.Lock()
-_inflight_flats: set[int] = set()
+_inflight_flats: dict[int, float] = {}
+
+# Watchdog threshold mirrors the apply_locks stale-row reaper in
+# flatpilot.apply.acquire_apply_lock — both layers share
+# STALE_APPLY_BUFFER_SEC so a future tuning honors both at once.
+def _inflight_watchdog_threshold_sec() -> float:
+    return apply_timeout_sec() + STALE_APPLY_BUFFER_SEC
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -169,10 +173,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         # Claim an in-flight slot for this flat. If another request is
-        # already applying to it, fail fast with 409 — don't queue, the
-        # caller will see the (eventually) submitted row on the next
-        # dashboard refresh.
+        # already applying to it (and the slot is fresh), fail fast with
+        # 409 — don't queue, the caller will see the (eventually)
+        # submitted row on the next dashboard refresh.
+        #
+        # Sweep stale slots first (held longer than apply_timeout +
+        # buffer) so a future code path that genuinely hangs doesn't
+        # block all subsequent applies for that flat until restart.
+        now = time.monotonic()
         with _inflight_lock:
+            threshold = _inflight_watchdog_threshold_sec()
+            stale = [
+                (fid, now - acquired_at)
+                for fid, acquired_at in _inflight_flats.items()
+                if now - acquired_at > threshold
+            ]
+            for fid, age in stale:
+                logger.warning(
+                    "apply: watchdog clearing stale in-flight slot for "
+                    "flat_id=%d (held %.1fs, threshold %.1fs)",
+                    fid,
+                    age,
+                    threshold,
+                )
+                _inflight_flats.pop(fid, None)
             if flat_id in _inflight_flats:
                 self._send_json(
                     HTTPStatus.CONFLICT,
@@ -185,12 +209,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     },
                 )
                 return
-            _inflight_flats.add(flat_id)
+            _inflight_flats[flat_id] = now
         try:
             result = _spawn_apply(flat_id)
         finally:
             with _inflight_lock:
-                _inflight_flats.discard(flat_id)
+                _inflight_flats.pop(flat_id, None)
         status = HTTPStatus.OK if result["ok"] else HTTPStatus.INTERNAL_SERVER_ERROR
         self._send_json(status, result)
 

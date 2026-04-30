@@ -62,18 +62,35 @@ def run_match() -> MatchSummary:
         (phash,),
     ).fetchall()
 
+    from flatpilot.auto_apply import overlay_profile
+
     counts = {"match": 0, "reject": 0}
     for row in rows:
         flat = dict(row)
-        reasons = evaluate(flat, profile)
-        decision = "reject" if reasons else "match"
+
+        base_reasons = evaluate(flat, profile)
+        matched_saved: list[str] = []
+        for ss in profile.saved_searches:
+            if not evaluate(flat, overlay_profile(profile, ss)):
+                matched_saved.append(ss.name)
+
+        decision = "match" if not base_reasons or matched_saved else "reject"
+
         conn.execute(
             """
             INSERT OR IGNORE INTO matches
-                (flat_id, profile_version_hash, decision, decision_reasons_json, decided_at)
-            VALUES (?, ?, ?, ?, ?)
+                (flat_id, profile_version_hash, decision, decision_reasons_json,
+                 decided_at, matched_saved_searches_json)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (flat["id"], phash, decision, json.dumps(reasons), now),
+            (
+                flat["id"],
+                phash,
+                decision,
+                json.dumps(base_reasons),
+                now,
+                json.dumps(matched_saved),
+            ),
         )
         counts[decision] += 1
 

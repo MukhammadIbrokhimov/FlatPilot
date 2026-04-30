@@ -28,17 +28,27 @@ from rich.prompt import Confirm, IntPrompt, Prompt
 from flatpilot.config import PROFILE_PATH, ensure_dirs
 from flatpilot.matcher.distance import geocode
 from flatpilot.profile import (
+    WBS,
     EmailNotification,
     Notifications,
     Profile,
+    SavedSearch,
     TelegramNotification,
-    WBS,
     load_profile,
     save_profile,
 )
 
-
 logger = logging.getLogger(__name__)
+
+
+def _maybe_add_auto_apply(profile: Profile, *, answer: bool) -> Profile:
+    if any(ss.name == "auto-default" for ss in profile.saved_searches):
+        return profile
+    if not answer:
+        return profile
+    new = list(profile.saved_searches)
+    new.append(SavedSearch(name="auto-default", auto_apply=True))
+    return profile.model_copy(update={"saved_searches": new})
 
 
 def run(console: Console | None = None) -> Path | None:
@@ -166,6 +176,15 @@ def run(console: Console | None = None) -> Path | None:
         out.print(str(exc))
         raise
 
+    out.rule("Auto-apply (Phase 4)")
+    if not any(ss.name == "auto-default" for ss in profile.saved_searches):
+        enable = Confirm.ask(
+            "Enable auto-apply with a starter saved search? "
+            "(Use `flatpilot pause` to disable temporarily.)",
+            default=False,
+        )
+        profile = _maybe_add_auto_apply(profile, answer=enable)
+
     out.print(
         f"[bold]{profile.city}[/bold] · {profile.radius_km} km · "
         f"€{profile.rent_min_warm}–{profile.rent_max_warm} warm · "
@@ -224,12 +243,17 @@ def _fallback_profile() -> Profile:
 def _resolve_home(
     city: str, existing: Profile | None, out: Console
 ) -> tuple[float | None, float | None]:
-    if existing and existing.city == city and existing.home_lat and existing.home_lng:
-        if Confirm.ask(
+    if (
+        existing
+        and existing.city == city
+        and existing.home_lat
+        and existing.home_lng
+        and Confirm.ask(
             f"Keep saved coordinates ({existing.home_lat:.4f}, {existing.home_lng:.4f})?",
             default=True,
-        ):
-            return existing.home_lat, existing.home_lng
+        )
+    ):
+        return existing.home_lat, existing.home_lng
 
     out.print(f"Looking up [bold]{city}, Germany[/bold] via Nominatim…")
     try:

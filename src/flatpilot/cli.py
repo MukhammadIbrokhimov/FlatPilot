@@ -111,8 +111,18 @@ def run(
     interval: int = typer.Option(
         120, "--interval", help="Seconds between passes when --watch is set (default 120)."
     ),
+    skip_apply: bool = typer.Option(
+        False,
+        "--skip-apply",
+        help="Run scrape/match/notify only. No auto-apply stage.",
+    ),
+    dry_run_apply: bool = typer.Option(
+        False,
+        "--dry-run-apply",
+        help="Log what auto-apply would do without calling fillers.",
+    ),
 ) -> None:
-    """One scrape + match + notify pass (add --watch to loop)."""
+    """One scrape + match + apply + notify pass (add --watch to loop)."""
     import signal
     import time
 
@@ -133,7 +143,11 @@ def run(
     init_db()
 
     if not watch:
-        failures = run_pipeline_once(profile, console)
+        failures = run_pipeline_once(
+            profile, console,
+            skip_apply=skip_apply,
+            dry_run_apply=dry_run_apply,
+        )
         if failures:
             raise typer.Exit(1)
         return
@@ -158,7 +172,11 @@ def run(
             pass_num += 1
             console.rule(f"[bold]pass {pass_num}[/bold]")
             try:
-                total_failures += run_pipeline_once(profile, console)
+                total_failures += run_pipeline_once(
+                    profile, console,
+                    skip_apply=skip_apply,
+                    dry_run_apply=dry_run_apply,
+                )
             except Exception as exc:
                 console.print(f"[red]pass {pass_num} aborted: {exc}[/red]")
                 total_failures += 1
@@ -464,6 +482,26 @@ def apply(
     console.print(
         f"[green]submitted[/green] · application_id={outcome.application_id}"
     )
+
+
+@app.command()
+def pause() -> None:
+    """Halt auto-apply by creating ~/.flatpilot/PAUSE."""
+    from flatpilot.auto_apply import PAUSE_PATH
+    from flatpilot.config import ensure_dirs
+
+    ensure_dirs()
+    PAUSE_PATH.touch()
+    rprint(f"[yellow]auto-apply paused[/yellow] · {PAUSE_PATH}")
+
+
+@app.command()
+def resume() -> None:
+    """Resume auto-apply by removing ~/.flatpilot/PAUSE."""
+    from flatpilot.auto_apply import PAUSE_PATH
+
+    PAUSE_PATH.unlink(missing_ok=True)
+    rprint("[green]auto-apply resumed[/green]")
 
 
 @app.command()

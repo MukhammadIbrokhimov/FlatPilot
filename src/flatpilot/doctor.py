@@ -122,6 +122,46 @@ def _check_smtp() -> tuple[str, str]:
     return "OK", "HOST/PORT/USER/PASSWORD/FROM set"
 
 
+def _check_pause() -> tuple[str, str]:
+    from flatpilot.auto_apply import PAUSE_PATH
+
+    if PAUSE_PATH.exists():
+        return "optional", "PAUSED — auto-apply halted (run `flatpilot resume` to re-enable)"
+    return "OK", "not paused"
+
+
+def _check_saved_searches() -> tuple[str, str]:
+    profile, err = _safe_load_profile()
+    if err is not None:
+        return "optional", err
+    if profile is None:
+        return "optional", "no profile"
+    active = [ss.name for ss in profile.saved_searches if ss.auto_apply]
+    if not active:
+        return "OK", "0 active"
+    return "OK", f"{len(active)} active ({', '.join(active)})"
+
+
+def _check_platform_burn(platform: str) -> tuple[str, str]:
+    from flatpilot.auto_apply import cooldown_remaining_sec, daily_cap_remaining
+    from flatpilot.database import get_conn, init_db
+
+    profile, err = _safe_load_profile()
+    if err is not None:
+        return "optional", err
+    if profile is None:
+        return "optional", "no profile"
+    cap = profile.auto_apply.daily_cap_per_platform.get(platform, 0)
+    if cap == 0:
+        return "optional", "no cap configured (auto-apply disabled for platform)"
+    init_db()
+    conn = get_conn()
+    remaining = daily_cap_remaining(conn, profile, platform)
+    used = cap - remaining
+    wait = cooldown_remaining_sec(conn, profile, platform)
+    return "OK", f"{used}/{cap} used today, ready in {wait:.0f}s"
+
+
 def _check_platform_cookies(platform: str) -> tuple[str, str]:
     """Probe ``~/.flatpilot/sessions/<platform>/state.json`` for cookie freshness.
 
@@ -192,6 +232,8 @@ CHECKS: list[tuple[str, CheckFn]] = [
     ("Playwright Chromium", _check_playwright),
     ("Telegram creds", _check_telegram),
     ("SMTP creds", _check_smtp),
+    ("Auto-apply: PAUSE switch", _check_pause),
+    ("Auto-apply: saved searches", _check_saved_searches),
 ]
 
 
@@ -232,6 +274,15 @@ def run(console: Console | None = None) -> int:
         style = _STYLES[status]
         table.add_row(
             f"Session: {platform}",
+            f"[{style}]{status}[/{style}]",
+            detail,
+        )
+    for filler_cls in sorted(all_fillers(), key=lambda c: c.platform):
+        platform = filler_cls.platform
+        status, detail = _check_platform_burn(platform)
+        style = _STYLES[status]
+        table.add_row(
+            f"Auto-apply: {platform}",
             f"[{style}]{status}[/{style}]",
             detail,
         )

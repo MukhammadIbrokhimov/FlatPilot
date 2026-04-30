@@ -217,6 +217,8 @@ def apply_to_flat(
     *,
     dry_run: bool = False,
     screenshot_dir: Path | None = None,
+    method: Literal["manual", "auto"] = "manual",
+    saved_search: str | None = None,
 ) -> ApplyOutcome:
     profile = load_profile()
     if profile is None:
@@ -286,6 +288,8 @@ def apply_to_flat(
                 attachments=attachments,
                 status="failed",
                 notes=str(exc),
+                method=method,
+                saved_search=saved_search,
             )
             logger.warning(
                 "apply: flat_id=%d failed: %s (application_id=%d)",
@@ -305,6 +309,8 @@ def apply_to_flat(
                 attachments=report.attachments_sent,
                 status="submitted",
                 notes=None,
+                method=method,
+                saved_search=saved_search,
             )
             logger.info(
                 "apply: flat_id=%d submitted (application_id=%d)",
@@ -329,6 +335,8 @@ def _record_application(
     attachments: list[Path],
     status: str,
     notes: str | None,
+    method: Literal["manual", "auto"] = "manual",
+    saved_search: str | None = None,
 ) -> int:
     now = datetime.now(UTC).isoformat()
     cur = conn.execute(
@@ -338,8 +346,8 @@ def _record_application(
             rent_warm_eur, rooms, size_sqm, district,
             applied_at, method,
             message_sent, attachments_sent_json,
-            status, notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?)
+            status, notes, triggered_by_saved_search
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             flat["id"],
@@ -351,10 +359,12 @@ def _record_application(
             flat.get("size_sqm"),
             flat.get("district"),
             now,
+            method,
             message,
             json.dumps([str(p) for p in attachments]),
             status,
             notes,
+            saved_search,
         ),
     )
     return int(cur.lastrowid)

@@ -261,6 +261,19 @@ def _applied_pane(applications: list[dict[str, Any]]) -> str:
     )
 
 
+def _badge_html(method: str | None) -> str:
+    if method == "auto":
+        return '<span class="badge badge--auto">auto</span>'
+    return '<span class="badge badge--manual">manual</span>'
+
+
+def _notes_html(app: dict[str, Any]) -> str:
+    notes = app.get("notes")
+    if notes and app.get("method") == "auto" and app.get("status") == "failed":
+        return f'<div class="application-row__notes">{escape(str(notes))}</div>'
+    return ""
+
+
 def _application_row(app: dict[str, Any]) -> str:
     title = escape(str(app.get("title") or "Untitled listing"))
     status = str(app.get("status") or "")
@@ -292,7 +305,7 @@ def _application_row(app: dict[str, Any]) -> str:
 
     return (
         f'<article class="card application" data-status="{escape(status, quote=True)}">'
-        f'<h3>{title} {badge}</h3>'
+        f'<h3>{title} {badge}{_badge_html(app.get("method"))}</h3>'
         f'<dl>'
         f'<dt>Applied</dt><dd>{applied_at}</dd>'
         f"<dt>Warmmiete</dt><dd>{escape(rent)}</dd>"
@@ -301,6 +314,7 @@ def _application_row(app: dict[str, Any]) -> str:
         + response_html
         + "</dl>"
         + open_html
+        + _notes_html(app)
         + "</article>"
     )
 
@@ -432,6 +446,9 @@ def _render(
             font-size: 0.9rem; opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 100; }}
   .toast.show {{ opacity: 1; }}
   .toast.error {{ background: #c33; }}
+  .badge--auto {{ background: #e0f2fe; color: #0369a1; }}
+  .badge--manual {{ background: #f3f4f6; color: #374151; }}
+  .application-row__notes {{ font-style: italic; color: #b45309; margin-top: 4px; font-size: 0.9em; }}
 </style>
 </head>
 <body>

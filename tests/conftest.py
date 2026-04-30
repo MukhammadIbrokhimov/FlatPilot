@@ -49,6 +49,13 @@ def tmp_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(_profile, "PROFILE_PATH", app_dir / "profile.json")
     monkeypatch.setattr(config, "PROFILE_PATH", app_dir / "profile.json")
 
+    # auto_apply.PAUSE_PATH is computed from APP_DIR at import time, so
+    # patch the bound name explicitly. Lazy import keeps this fixture
+    # importable on a tree that hasn't introduced auto_apply.py yet.
+    from flatpilot import auto_apply as _auto_apply
+
+    monkeypatch.setattr(_auto_apply, "PAUSE_PATH", app_dir / "PAUSE")
+
     database.close_conn()
     database.init_db()
     conn = database.get_conn()

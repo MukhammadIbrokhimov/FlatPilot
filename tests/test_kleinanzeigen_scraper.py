@@ -101,7 +101,9 @@ def test_scraper_user_agent_comes_from_pool(tmp_db) -> None:
     assert scraper.resolve_user_agent() in POOL
 
 
-def test_fetch_new_uses_pinned_ua_and_stealth(tmp_db, monkeypatch: pytest.MonkeyPatch, berlin_profile) -> None:
+def test_fetch_new_uses_pinned_ua_and_stealth(
+    tmp_db, monkeypatch: pytest.MonkeyPatch, berlin_profile
+) -> None:
     """fetch_new hands a stealth-enabled SessionConfig with the pinned UA to polite_session."""
     from conftest import make_session_fakes
     from flatpilot.scrapers import kleinanzeigen as kz

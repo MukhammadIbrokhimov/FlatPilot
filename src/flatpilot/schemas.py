@@ -13,7 +13,7 @@ SQLite quirks worth remembering:
 
 from __future__ import annotations
 
-from flatpilot.database import SCHEMAS
+from flatpilot.database import COLUMNS, SCHEMAS
 
 FLATS_CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS flats (
@@ -116,3 +116,17 @@ CREATE TABLE IF NOT EXISTS apply_locks (
 """
 
 SCHEMAS["apply_locks"] = APPLY_LOCKS_CREATE_SQL
+
+COLUMNS["matches"] = {
+    "matched_saved_searches_json": "TEXT NOT NULL DEFAULT '[]'",
+}
+COLUMNS["applications"] = {
+    "triggered_by_saved_search": "TEXT",
+}
+
+APPLICATIONS_METHOD_APPLIED_AT_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_applications_method_applied_at
+    ON applications(method, applied_at)
+"""
+
+SCHEMAS["idx_applications_method_applied_at"] = APPLICATIONS_METHOD_APPLIED_AT_INDEX_SQL

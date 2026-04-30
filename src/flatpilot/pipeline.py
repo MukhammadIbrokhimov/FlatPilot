@@ -13,8 +13,14 @@ from datetime import UTC, datetime
 from flatpilot.profile import Profile
 
 
-def run_pipeline_once(profile: Profile, console) -> int:
-    """Run one scrape → match → notify pass. Return number of stage failures."""
+def run_pipeline_once(
+    profile: Profile,
+    console,
+    *,
+    skip_apply: bool = False,
+    dry_run_apply: bool = False,
+) -> int:
+    """Run one scrape → match → apply → notify pass. Return number of stage failures."""
     failures = 0
 
     console.rule("scrape")
@@ -30,6 +36,14 @@ def run_pipeline_once(profile: Profile, console) -> int:
     except Exception as exc:
         console.print(f"[red]match failed: {exc.__class__.__name__}: {exc}[/red]")
         failures += 1
+
+    if not skip_apply:
+        console.rule("apply")
+        try:
+            run_pipeline_apply(profile, console, dry_run=dry_run_apply)
+        except Exception as exc:
+            console.print(f"[red]apply failed: {exc.__class__.__name__}: {exc}[/red]")
+            failures += 1
 
     console.rule("notify")
     try:
@@ -67,6 +81,11 @@ def run_pipeline_match(console) -> None:
         f"[yellow]{summary['reject']} rejected[/yellow] "
         f"(processed {summary['processed']} flats, profile {summary['profile_hash']})"
     )
+
+
+def run_pipeline_apply(profile: Profile, console, *, dry_run: bool = False) -> None:
+    from flatpilot.auto_apply import run_pipeline_apply as _impl
+    _impl(profile, console, dry_run=dry_run)
 
 
 def run_pipeline_notify(profile: Profile, console) -> None:

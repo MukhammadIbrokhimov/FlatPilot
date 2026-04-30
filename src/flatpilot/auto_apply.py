@@ -72,7 +72,9 @@ def cooldown_remaining_sec(
     conn: sqlite3.Connection, profile: Profile, platform: str
 ) -> float:
     cooldown = profile.auto_apply.cooldown_seconds_per_platform.get(platform, 0)
-    if cooldown <= 0:
+    pacing = profile.auto_apply.pacing_seconds_per_platform.get(platform, 0)
+    effective = max(cooldown, pacing)
+    if effective <= 0:
         return 0.0
     row = conn.execute(
         "SELECT MAX(applied_at) AS last FROM applications "
@@ -86,7 +88,19 @@ def cooldown_remaining_sec(
     if last is None:
         return 0.0
     elapsed = (datetime.now(UTC) - datetime.fromisoformat(last)).total_seconds()
-    return max(0.0, cooldown - elapsed)
+    return max(0.0, effective - elapsed)
+
+
+def failures_for_flat(conn: sqlite3.Connection, flat_id: int) -> int:
+    """Count consecutive FillError-style failures (status='failed', method='auto')
+    for this flat, excluding auto_skipped rows."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM applications "
+        "WHERE flat_id = ? AND method = 'auto' AND status = 'failed' "
+        "AND (notes IS NULL OR notes NOT LIKE 'auto_skipped:%')",
+        (flat_id,),
+    ).fetchone()
+    return int(row["n"])
 
 
 def completeness_ok(profile: Profile, flat: dict) -> tuple[bool, str | None]:
@@ -106,7 +120,7 @@ def completeness_ok(profile: Profile, flat: dict) -> tuple[bool, str | None]:
     return True, None
 
 
-def run_pipeline_apply(profile, console, *, dry_run: bool = False) -> None:
+def run_pipeline_apply(profile: Profile, console, *, dry_run: bool = False) -> None:
     if is_paused():
         console.print("[yellow]auto-apply: PAUSED (~/.flatpilot/PAUSE present)[/yellow]")
         return
@@ -156,8 +170,9 @@ def run_pipeline_apply(profile, console, *, dry_run: bool = False) -> None:
 
 
 def _try_flat(
-    *, conn, console, profile, flat, platform, candidate_names,
-    saved_search_by_name, dry_run,
+    *, conn: sqlite3.Connection, console, profile: Profile,
+    flat: dict, platform: str, candidate_names: list[str],
+    saved_search_by_name: dict[str, SavedSearch], dry_run: bool,
 ) -> None:
     flat_id = int(flat["id"])
 
@@ -185,13 +200,23 @@ def _try_flat(
             )
             return
 
+        if failures_for_flat(conn, flat_id) >= profile.auto_apply.max_failures_per_flat:
+            console.print(
+                f"[dim]auto-apply: flat {flat_id} has reached max failures "
+                f"({profile.auto_apply.max_failures_per_flat}); skipping[/dim]"
+            )
+            return
+
         ok, reason = completeness_ok(profile, flat)
         if not ok:
             attachments: list = []
             try:
                 attachments = resolve_for_platform(profile, platform)
-            except Exception:
-                attachments = []
+            except Exception as exc:
+                logger.warning(
+                    "auto-apply: attachment re-resolve failed for flat %d (%s): %s",
+                    flat_id, platform, exc,
+                )
 
             _record_application(
                 conn,

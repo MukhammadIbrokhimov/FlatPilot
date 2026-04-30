@@ -90,7 +90,15 @@ def generate_html(conn: sqlite3.Connection | None = None) -> str:
 
     applications = _load_applications(conn)
 
-    return _render(matched, rejected_session, rejected_historical, applications)
+    saved_search_names = sorted(
+        {
+            str(app["triggered_by_saved_search"])
+            for app in applications
+            if app.get("triggered_by_saved_search")
+        }
+    )
+
+    return _render(matched, rejected_session, rejected_historical, applications, saved_search_names)
 
 
 def generate() -> Path:
@@ -107,7 +115,8 @@ def _load_applications(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         SELECT id, flat_id, platform, listing_url, title,
                rent_warm_eur, rooms, size_sqm, district,
                applied_at, method, message_sent, attachments_sent_json,
-               status, response_received_at, response_text, notes
+               status, response_received_at, response_text, notes,
+               triggered_by_saved_search
         FROM applications
         ORDER BY applied_at DESC
         """
@@ -241,7 +250,7 @@ def _district_options(groups: list[list[dict[str, Any]]]) -> str:
     return opts
 
 
-def _applied_pane(applications: list[dict[str, Any]]) -> str:
+def _applied_pane(applications: list[dict[str, Any]], saved_search_names: list[str]) -> str:
     if not applications:
         return (
             '<p class="empty">No applications yet. Apply from the Matches '
@@ -251,11 +260,16 @@ def _applied_pane(applications: list[dict[str, Any]]) -> str:
     for s in _APPLICATION_STATUSES:
         status_options += f'<option value="{s}">{escape(s.replace("_", " "))}</option>'
 
+    ss_options = '<option value="">All</option><option value="manual">Manual only</option>'
+    for name in saved_search_names:
+        ss_options += f'<option value="{escape(name, quote=True)}">{escape(name)}</option>'
+
     rows_html = "\n".join(_application_row(app) for app in applications)
 
     return (
         '<div class="filters">'
         f'<label>Status <select id="f-app-status">{status_options}</select></label>'
+        f'<label>Saved search <select id="saved-search-filter">{ss_options}</select></label>'
         "</div>"
         f'<div class="cards">{rows_html}</div>'
     )
@@ -288,6 +302,15 @@ def _application_row(app: dict[str, Any]) -> str:
     listing_url = str(app.get("listing_url") or "")
     response_at = app.get("response_received_at")
 
+    triggered = app.get("triggered_by_saved_search") or ""
+    method = app.get("method") or ""
+    if triggered:
+        data_saved_search = escape(triggered, quote=True)
+    elif method == "manual":
+        data_saved_search = "manual"
+    else:
+        data_saved_search = ""
+
     response_html = ""
     if response_at:
         response_html = (
@@ -304,7 +327,8 @@ def _application_row(app: dict[str, Any]) -> str:
         )
 
     return (
-        f'<article class="card application" data-status="{escape(status, quote=True)}">'
+        f'<article class="card application" data-status="{escape(status, quote=True)}"'
+        f' data-saved-search="{data_saved_search}">'
         f'<h3>{title} {badge}{_badge_html(app.get("method"))}</h3>'
         f'<dl>'
         f'<dt>Applied</dt><dd>{applied_at}</dd>'
@@ -373,6 +397,7 @@ def _render(
     rejected_session: list[dict[str, Any]],
     rejected_historical: list[dict[str, Any]],
     applications: list[dict[str, Any]],
+    saved_search_names: list[str] | None = None,
 ) -> str:
     generated_at = datetime.now(UTC).isoformat(timespec="seconds")
     district_options = _district_options(
@@ -492,7 +517,7 @@ def _render(
 </section>
 
 <section class="tab-pane" data-pane="applied">
-  {_applied_pane(applications)}
+  {_applied_pane(applications, saved_search_names or [])}
 </section>
 
 <section class="tab-pane" data-pane="responses">
@@ -662,6 +687,17 @@ def _render(
       }});
     }}
     appStatusFilter.addEventListener('change', filterApplications);
+  }}
+
+  // D: Applied-tab saved-search filter.
+  const ssFilter = document.getElementById('saved-search-filter');
+  if (ssFilter) {{
+    ssFilter.addEventListener('change', () => {{
+      const want = ssFilter.value;
+      document.querySelectorAll('[data-pane="applied"] .card.application').forEach(card => {{
+        card.style.display = (want === '' || card.dataset.savedSearch === want) ? '' : 'none';
+      }});
+    }});
   }}
 
   // M4: Responses-tab paste-reply form.

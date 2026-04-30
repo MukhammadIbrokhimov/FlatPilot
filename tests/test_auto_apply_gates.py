@@ -174,3 +174,81 @@ def test_completeness_fails_on_unregistered_platform(tmp_db):
     ok, reason = completeness_ok(profile, flat)
     assert ok is False
     assert "filler" in reason.lower()
+
+
+def test_failures_for_flat_zero_when_no_failures(tmp_db):
+    from flatpilot.auto_apply import failures_for_flat
+
+    flat_id = _seed_flat(tmp_db)
+    assert failures_for_flat(tmp_db, flat_id) == 0
+
+
+def test_failures_for_flat_counts_only_real_failures(tmp_db):
+    from datetime import UTC, datetime
+
+    from flatpilot.auto_apply import failures_for_flat
+
+    flat_id = _seed_flat(tmp_db)
+    now = datetime.now(UTC).isoformat()
+    # 2 real failures, 1 auto_skipped (must not count), 1 submitted (must not count)
+    tmp_db.execute(
+        "INSERT INTO applications (flat_id, platform, listing_url, title, "
+        "applied_at, method, attachments_sent_json, status, notes) "
+        "VALUES (?, 'wg-gesucht', 'https://x', 'T', ?, 'auto', '[]', 'failed', 'FillError: foo')",
+        (flat_id, now),
+    )
+    tmp_db.execute(
+        "INSERT INTO applications (flat_id, platform, listing_url, title, "
+        "applied_at, method, attachments_sent_json, status, notes) "
+        "VALUES (?, 'wg-gesucht', 'https://x', 'T', ?, 'auto', '[]', 'failed', 'FillError: bar')",
+        (flat_id, now),
+    )
+    tmp_db.execute(
+        "INSERT INTO applications (flat_id, platform, listing_url, title, "
+        "applied_at, method, attachments_sent_json, status, notes) "
+        "VALUES (?, 'wg-gesucht', 'https://x', 'T', ?, 'auto', '[]', 'failed', "
+        "'auto_skipped: missing template')",
+        (flat_id, now),
+    )
+    tmp_db.execute(
+        "INSERT INTO applications (flat_id, platform, listing_url, title, "
+        "applied_at, method, attachments_sent_json, status) "
+        "VALUES (?, 'wg-gesucht', 'https://x', 'T', ?, 'auto', '[]', 'submitted')",
+        (flat_id, now),
+    )
+    assert failures_for_flat(tmp_db, flat_id) == 2
+
+
+def test_pacing_extends_wait_beyond_cooldown(tmp_db):
+    from datetime import UTC, datetime, timedelta
+
+    from flatpilot.auto_apply import cooldown_remaining_sec
+    from flatpilot.profile import AutoApplySettings, Profile
+
+    base = Profile.load_example()
+    profile = base.model_copy(
+        update={
+            "auto_apply": AutoApplySettings(
+                cooldown_seconds_per_platform={"wg-gesucht": 60},
+                pacing_seconds_per_platform={"wg-gesucht": 4320},
+            )
+        }
+    )
+    recent = (datetime.now(UTC) - timedelta(seconds=30)).isoformat()
+    _seed_application(tmp_db, platform="wg-gesucht", status="submitted", applied_at=recent)
+    remaining = cooldown_remaining_sec(tmp_db, profile, "wg-gesucht")
+    # pacing (4320) wins over cooldown (60); ~30s elapsed → ~4290s remaining
+    assert 4280 < remaining < 4300
+
+
+def test_pacing_zero_does_not_change_cooldown_behavior(tmp_db):
+    from datetime import UTC, datetime, timedelta
+
+    from flatpilot.auto_apply import cooldown_remaining_sec
+
+    profile = _profile_with_caps(cooldown=120)
+    recent = (datetime.now(UTC) - timedelta(seconds=30)).isoformat()
+    _seed_application(tmp_db, platform="wg-gesucht", status="submitted", applied_at=recent)
+    remaining = cooldown_remaining_sec(tmp_db, profile, "wg-gesucht")
+    # Pacing default=0 → cooldown alone (120) gates → ~90s remaining
+    assert 80 < remaining < 95

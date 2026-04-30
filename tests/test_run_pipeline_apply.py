@@ -202,6 +202,40 @@ def test_run_pipeline_once_now_includes_apply_stage(tmp_db, monkeypatch):
     assert called["apply"] is True
 
 
+def test_skips_after_max_failures_reached(tmp_db):
+    from datetime import UTC, datetime
+    from unittest.mock import patch
+
+    from flatpilot.auto_apply import run_pipeline_apply
+    from flatpilot.profile import profile_hash
+
+    profile = _profile_with_one_auto_search()
+    save_profile(profile)
+    flat_id = _seed_flat(tmp_db)
+    _seed_match(
+        tmp_db,
+        flat_id=flat_id,
+        profile_hash=profile_hash(profile),
+        matched_saved_searches=["ss1"],
+    )
+    now = datetime.now(UTC).isoformat()
+    # Seed 3 prior FillError-style failures for this flat (default max_failures_per_flat=3).
+    for _ in range(3):
+        tmp_db.execute(
+            "INSERT INTO applications (flat_id, platform, listing_url, title, "
+            "applied_at, method, attachments_sent_json, status, notes) "
+            "VALUES (?, 'wg-gesucht', 'https://x', 'T', ?, 'auto', '[]', 'failed', "
+            "'FillError: x')",
+            (flat_id, now),
+        )
+
+    with patch("flatpilot.auto_apply.apply_to_flat") as mocked, \
+         patch("flatpilot.auto_apply.completeness_ok", return_value=(True, None)):
+        run_pipeline_apply(profile, Console())
+
+    mocked.assert_not_called()
+
+
 def test_run_pipeline_once_skip_apply_does_not_call_apply_stage(tmp_db, monkeypatch):
     from flatpilot.pipeline import run_pipeline_once
 

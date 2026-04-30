@@ -44,3 +44,23 @@ def test_applications_index_present(tmp_db):
         )
     }
     assert "idx_applications_method_applied_at" in indices
+
+
+def test_max_failures_per_flat_default():
+    s = AutoApplySettings()
+    assert s.max_failures_per_flat == 3
+
+
+def test_max_failures_per_flat_must_be_positive():
+    import pytest
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        AutoApplySettings(max_failures_per_flat=0)
+
+
+def test_pacing_default_disabled():
+    s = AutoApplySettings()
+    assert s.pacing_seconds_per_platform == {
+        "wg-gesucht": 0, "kleinanzeigen": 0, "inberlinwohnen": 0,
+    }

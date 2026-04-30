@@ -93,6 +93,12 @@ class AutoApplySettings(BaseModel):
             "inberlinwohnen": 120,
         }
     )
+    max_failures_per_flat: int = Field(default=3, ge=1)
+    pacing_seconds_per_platform: dict[str, int] = Field(
+        default_factory=lambda: {
+            "wg-gesucht": 0, "kleinanzeigen": 0, "inberlinwohnen": 0,
+        }
+    )
 
 
 class SavedSearch(BaseModel):

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 from datetime import UTC, datetime
 from typing import Any, TypedDict
 
@@ -89,7 +90,7 @@ def _send(channel: str, flat: dict[str, Any], profile: Profile) -> None:
         raise ValueError(f"unknown channel: {channel!r}")
 
 
-def _mark_stale_matches_notified(conn, current_hash: str) -> None:
+def _mark_stale_matches_notified(conn: sqlite3.Connection, current_hash: str) -> None:
     """Suppress pending matches whose profile hash is no longer current.
 
     Stamps notified_at (without touching notified_channels_json) so these

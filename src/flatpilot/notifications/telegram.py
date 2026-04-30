@@ -16,7 +16,6 @@ import httpx
 
 from flatpilot.profile import Profile
 
-
 logger = logging.getLogger(__name__)
 
 

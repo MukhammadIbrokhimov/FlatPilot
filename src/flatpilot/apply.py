@@ -131,7 +131,7 @@ class ApplyLockHeldError(AlreadyAppliedError):
     """
 
 
-def acquire_apply_lock(conn, flat_id: int) -> None:
+def acquire_apply_lock(conn: sqlite3.Connection, flat_id: int) -> None:
     """Take a cross-process lock on ``flat_id``.
 
     Two FlatPilot processes — typically the CLI ``flatpilot apply 42``
@@ -183,7 +183,7 @@ def acquire_apply_lock(conn, flat_id: int) -> None:
         raise ApplyLockHeldError(msg) from exc
 
 
-def release_apply_lock(conn, flat_id: int) -> None:
+def release_apply_lock(conn: sqlite3.Connection, flat_id: int) -> None:
     """Release the cross-process lock for ``flat_id``.
 
     No-op if no row exists (e.g. the caller never successfully acquired,
@@ -327,7 +327,7 @@ def apply_to_flat(
 
 
 def _record_application(
-    conn,
+    conn: sqlite3.Connection,
     *,
     profile: Profile,
     flat: dict,

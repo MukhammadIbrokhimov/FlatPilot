@@ -17,7 +17,6 @@ import sys
 
 from flatpilot.config import LOG_DIR, ensure_dirs
 
-
 _LOG_FILE = "flatpilot.log"
 _BACKUP_DAYS = 14
 _FORMAT = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"

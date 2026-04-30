@@ -17,12 +17,11 @@ false-positive notification.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import date, timedelta
-from typing import Any, Callable
+from typing import Any
 
 from flatpilot.profile import Profile
-
 
 FilterResult = tuple[bool, str | None]
 Filter = Callable[[Mapping[str, Any], Profile], FilterResult]

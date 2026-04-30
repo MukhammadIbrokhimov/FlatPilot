@@ -38,7 +38,7 @@ import flatpilot.fillers.wg_gesucht  # noqa: F401
 from flatpilot.attachments import resolve_for_platform
 from flatpilot.compose import compose_anschreiben
 from flatpilot.database import get_conn, init_db
-from flatpilot.errors import ProfileMissingError
+from flatpilot.errors import FlatPilotError, ProfileMissingError
 from flatpilot.fillers import get_filler
 from flatpilot.fillers.base import FillError, FillReport
 from flatpilot.profile import Profile, load_profile
@@ -100,7 +100,7 @@ def apply_timeout_sec() -> int:
     return v
 
 
-class AlreadyAppliedError(RuntimeError):
+class AlreadyAppliedError(FlatPilotError):
     """Raised when a flat already has a successful submitted application.
 
     The schema allows multiple ``applications`` rows per flat (so a failed

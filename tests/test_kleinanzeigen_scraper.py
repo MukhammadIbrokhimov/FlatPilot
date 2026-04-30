@@ -101,62 +101,23 @@ def test_scraper_user_agent_comes_from_pool(tmp_db) -> None:
     assert scraper.resolve_user_agent() in POOL
 
 
-def test_fetch_new_uses_pinned_ua_and_stealth(tmp_db, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fetch_new_uses_pinned_ua_and_stealth(tmp_db, monkeypatch: pytest.MonkeyPatch, berlin_profile) -> None:
     """fetch_new hands a stealth-enabled SessionConfig with the pinned UA to polite_session."""
-    from flatpilot.profile import Profile
+    from conftest import make_session_fakes
     from flatpilot.scrapers import kleinanzeigen as kz
     from flatpilot.scrapers.ua_pool import pin_user_agent
 
     captured: dict[str, Any] = {}
-
-    class _FakeCtxMgr:
-        def __init__(self, config: Any) -> None:
-            captured["config"] = config
-
-        def __enter__(self) -> Any:
-            return object()
-
-        def __exit__(self, *_exc: Any) -> None:
-            return None
-
-    class _FakePageCtxMgr:
-        def __init__(self, _ctx: Any) -> None:
-            pass
-
-        def __enter__(self) -> Any:
-            class _P:
-                def goto(self, *_a: Any, **_kw: Any) -> Any:
-                    class _R:
-                        status = 200
-
-                    return _R()
-
-                def locator(self, _s: str) -> Any:
-                    class _L:
-                        def count(self) -> int:
-                            return 0
-
-                    return _L()
-
-                def content(self) -> str:
-                    return FIXTURE.read_text()
-
-            return _P()
-
-        def __exit__(self, *_exc: Any) -> None:
-            return None
-
-    monkeypatch.setattr(kz, "polite_session", _FakeCtxMgr)
-    monkeypatch.setattr(kz, "session_page", _FakePageCtxMgr)
-
-    # Profile has ~15 required fields; load the shipped example and flip
-    # the city to Berlin (the only entry in Kleinanzeigen CITY_IDS).
-    base = Profile.load_example()
-    profile = base.model_copy(update={"city": "Berlin"})
+    polite_fake, page_fake = make_session_fakes(
+        default_html=FIXTURE.read_text(),
+        captured=captured,
+    )
+    monkeypatch.setattr(kz, "polite_session", polite_fake)
+    monkeypatch.setattr(kz, "session_page", page_fake)
 
     pinned = pin_user_agent("kleinanzeigen")
     scraper = kz.KleinanzeigenScraper()
-    list(scraper.fetch_new(profile))  # drain generator
+    list(scraper.fetch_new(berlin_profile))  # drain generator
 
     cfg = captured["config"]
     assert cfg.platform == "kleinanzeigen"

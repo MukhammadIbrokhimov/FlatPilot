@@ -48,7 +48,7 @@ def _make_stub(platform: str, supported_cities: frozenset[str] | None) -> type[_
 
 def test_run_scrape_pass_skips_scrapers_whose_cities_dont_match(tmp_db) -> None:
     """Scrapers declaring cities not matching profile.city are skipped at the gate."""
-    from flatpilot.cli import _run_scrape_pass
+    from flatpilot.pipeline import run_scrape_pass
 
     profile = _profile_for_city("Munich")  # not in any stub's supported set
     console = Console(record=True)
@@ -57,7 +57,7 @@ def test_run_scrape_pass_skips_scrapers_whose_cities_dont_match(tmp_db) -> None:
     any_city = _make_stub("any-city", None)()
     multi_city = _make_stub("multi", frozenset({"Berlin", "Hamburg", "Munich"}))()
 
-    _run_scrape_pass([berlin_only, any_city, multi_city], profile, console)
+    run_scrape_pass([berlin_only, any_city, multi_city], profile, console)
 
     # berlin-only stub must NOT be called; the multi-city stub IS Munich-supported;
     # the any-city stub is None-cities → always called.
@@ -71,7 +71,7 @@ def test_run_scrape_pass_skips_scrapers_whose_cities_dont_match(tmp_db) -> None:
 
 def test_run_scrape_pass_runs_all_when_all_support_city(tmp_db) -> None:
     """When every scraper supports profile.city the gate is a no-op."""
-    from flatpilot.cli import _run_scrape_pass
+    from flatpilot.pipeline import run_scrape_pass
 
     profile = _profile_for_city("Berlin")
     console = Console()
@@ -79,7 +79,7 @@ def test_run_scrape_pass_runs_all_when_all_support_city(tmp_db) -> None:
     a = _make_stub("plat-a", frozenset({"Berlin"}))()
     b = _make_stub("plat-b", None)()
 
-    _run_scrape_pass([a, b], profile, console)
+    run_scrape_pass([a, b], profile, console)
 
     assert a.fetch_called_with == "Berlin"
     assert b.fetch_called_with == "Berlin"
@@ -137,25 +137,24 @@ def test_scrape_command_runs_when_explicit_platform_supports_city(
 
 
 def test_scrape_command_bootstrap_imports_inberlinwohnen() -> None:
-    """Both bootstrap sites in cli.py import flatpilot.scrapers.inberlinwohnen
-    so @register fires during command startup.
+    """All scraper @register side-effect imports live in pipeline._ensure_scrapers_registered.
 
-    Pure source inspection — once Task 2's parser tests import the
-    scraper module, ``sys.modules`` is populated for the rest of the
-    pytest session and behavioural tests cannot distinguish 'bootstrap
-    imports it' from 'parser tests imported it earlier'. Source
-    inspection is the only test that's actually red before the
-    implementer adds the import lines.
+    After deduplication both the run-command path and the scrape command call
+    _ensure_scrapers_registered(); no direct scraper imports remain in cli.py.
+    Source inspection is the only test that's actually red if either site
+    reverts to its own copy.
     """
     from pathlib import Path
 
-    src = Path("src/flatpilot/cli.py").read_text()
-    occurrences = src.count("import flatpilot.scrapers.inberlinwohnen")
-    assert occurrences == 2, (
-        f"expected 2 bootstrap imports of "
-        f"flatpilot.scrapers.inberlinwohnen in cli.py "
-        f"(one in _run_pipeline_scrape, one in scrape command); "
-        f"found {occurrences}"
+    root = Path(__file__).parent.parent
+    cli_src = (root / "src/flatpilot/cli.py").read_text()
+    pipeline_src = (root / "src/flatpilot/pipeline.py").read_text()
+    assert cli_src.count("import flatpilot.scrapers.inberlinwohnen") == 0, (
+        "cli.py must not import scrapers directly; call _ensure_scrapers_registered() instead"
+    )
+    assert pipeline_src.count("import flatpilot.scrapers.inberlinwohnen") == 1, (
+        "expected exactly 1 bootstrap import of flatpilot.scrapers.inberlinwohnen "
+        "in pipeline._ensure_scrapers_registered(); check pipeline.py"
     )
 
 
@@ -164,7 +163,7 @@ def test_pipeline_filters_inberlinwohnen_for_non_berlin_profile(
 ) -> None:
     """A Munich profile drives _run_scrape_pass to skip both kleinanzeigen
     and inberlinwohnen (Berlin-only) but still call wg-gesucht (multi-city)."""
-    from flatpilot.cli import _run_scrape_pass
+    from flatpilot.pipeline import run_scrape_pass
     from flatpilot.profile import Profile
     from flatpilot.scrapers import inberlinwohnen as ib
     from flatpilot.scrapers import kleinanzeigen as kz
@@ -188,7 +187,7 @@ def test_pipeline_filters_inberlinwohnen_for_non_berlin_profile(
         kz.KleinanzeigenScraper(),
         wg.WGGesuchtScraper(),
     ]
-    _run_scrape_pass(scrapers, profile, console)
+    run_scrape_pass(scrapers, profile, console)
 
     assert "inberlinwohnen" not in called
     assert "kleinanzeigen" not in called

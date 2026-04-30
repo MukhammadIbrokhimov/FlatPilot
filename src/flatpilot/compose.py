@@ -43,10 +43,11 @@ from string import Template
 from typing import Any
 
 from flatpilot.config import TEMPLATES_DIR
+from flatpilot.errors import FlatPilotError
 from flatpilot.profile import Profile
 
 
-class TemplateError(RuntimeError):
+class TemplateError(FlatPilotError):
     """Base class for all composer errors."""
 
 

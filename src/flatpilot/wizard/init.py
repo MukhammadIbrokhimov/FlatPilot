@@ -275,7 +275,7 @@ def _collect_wbs(out: Console, current: WBS) -> WBS:
     return WBS(
         status="yes",
         size_category=int(size_str),
-        income_category=int(income_str),
+        income_category=int(income_str),  # type: ignore[arg-type]  # choices enforces valid values
     )
 
 

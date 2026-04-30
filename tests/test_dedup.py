@@ -280,10 +280,10 @@ def test_assign_canonical_missing_row_noop(tmp_db):
 
 
 def test_insert_flat_populates_canonical_link(tmp_db):
-    from flatpilot.cli import _insert_flat
+    from flatpilot.pipeline import insert_flat
 
     now = datetime.now(UTC).isoformat()
-    _insert_flat(
+    insert_flat(
         tmp_db,
         {
             "external_id": "wg-1",
@@ -296,7 +296,7 @@ def test_insert_flat_populates_canonical_link(tmp_db):
         "wg_gesucht",
         now,
     )
-    _insert_flat(
+    insert_flat(
         tmp_db,
         {
             "external_id": "ka-1",
@@ -317,10 +317,10 @@ def test_insert_flat_populates_canonical_link(tmp_db):
 
 
 def test_insert_flat_without_twin_leaves_link_null(tmp_db):
-    from flatpilot.cli import _insert_flat
+    from flatpilot.pipeline import insert_flat
 
     now = datetime.now(UTC).isoformat()
-    _insert_flat(
+    insert_flat(
         tmp_db,
         {
             "external_id": "wg-1",
@@ -434,14 +434,14 @@ def test_deleted_canonical_leaves_survivor_self_canonical(tmp_db):
 
 def test_matcher_writes_one_match_per_canonical(tmp_db, monkeypatch):
     """Twin flats on two platforms → one match row, keyed on the canonical root."""
-    from flatpilot.cli import _insert_flat
     from flatpilot.matcher import runner
+    from flatpilot.pipeline import insert_flat
 
     profile = _minimal_profile()
     monkeypatch.setattr(runner, "load_profile", lambda: profile)
 
     now = datetime.now(UTC).isoformat()
-    _insert_flat(
+    insert_flat(
         tmp_db,
         {
             "external_id": "wg-1",
@@ -454,7 +454,7 @@ def test_matcher_writes_one_match_per_canonical(tmp_db, monkeypatch):
         "wg_gesucht",
         now,
     )
-    _insert_flat(
+    insert_flat(
         tmp_db,
         {
             "external_id": "ka-1",
@@ -481,11 +481,11 @@ def test_matcher_writes_one_match_per_canonical(tmp_db, monkeypatch):
 
 def test_notifier_dedups_by_canonical(tmp_db, monkeypatch):
     """Two match rows for the same canonical cluster → one dispatch call."""
-    from flatpilot.cli import _insert_flat
     from flatpilot.notifications import dispatcher
+    from flatpilot.pipeline import insert_flat
 
     now = datetime.now(UTC).isoformat()
-    _insert_flat(
+    insert_flat(
         tmp_db,
         {
             "external_id": "wg-1",
@@ -498,7 +498,7 @@ def test_notifier_dedups_by_canonical(tmp_db, monkeypatch):
         "wg_gesucht",
         now,
     )
-    _insert_flat(
+    insert_flat(
         tmp_db,
         {
             "external_id": "ka-1",
@@ -540,9 +540,9 @@ def test_notifier_dedups_by_canonical(tmp_db, monkeypatch):
 
 def test_three_platform_cluster_produces_one_match_and_one_notification(tmp_db, monkeypatch):
     """All three platforms → one match row, one notification per channel."""
-    from flatpilot.cli import _insert_flat
     from flatpilot.matcher import runner
     from flatpilot.notifications import dispatcher
+    from flatpilot.pipeline import insert_flat
 
     profile_obj = _minimal_profile(telegram_enabled=True)
     monkeypatch.setattr(runner, "load_profile", lambda: profile_obj)
@@ -553,7 +553,7 @@ def test_three_platform_cluster_produces_one_match_and_one_notification(tmp_db, 
         ("ka-1", "kleinanzeigen", 810.0),
         ("is-1", "immoscout", 820.0),
     ):
-        _insert_flat(
+        insert_flat(
             tmp_db,
             {
                 "external_id": ext,
@@ -583,14 +583,14 @@ def test_three_platform_cluster_produces_one_match_and_one_notification(tmp_db, 
 def test_deleted_canonical_releases_survivor_for_fresh_matching(tmp_db, monkeypatch):
     """When the canonical is deleted, the surviving duplicate becomes a root
     and gets its own match — "one ping per *live* canonical" semantics."""
-    from flatpilot.cli import _insert_flat
     from flatpilot.matcher import runner
+    from flatpilot.pipeline import insert_flat
 
     profile = _minimal_profile()
     monkeypatch.setattr(runner, "load_profile", lambda: profile)
 
     now = datetime.now(UTC).isoformat()
-    _insert_flat(
+    insert_flat(
         tmp_db,
         {
             "external_id": "wg-1",
@@ -604,7 +604,7 @@ def test_deleted_canonical_releases_survivor_for_fresh_matching(tmp_db, monkeypa
         "wg_gesucht",
         now,
     )
-    _insert_flat(
+    insert_flat(
         tmp_db,
         {
             "external_id": "ka-1",

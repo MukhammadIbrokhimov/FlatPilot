@@ -48,9 +48,12 @@ def send(to: str, subject: str, plain: str, html: str | None = None) -> None:
     if html:
         msg.add_alternative(html, subtype="html")
 
-    host = values["SMTP_HOST"]
-    user = values["SMTP_USER"]
-    password = values["SMTP_PASSWORD"]
+    # All three are guaranteed non-None: the `missing` check above would have
+    # raised EmailError if any were absent.  mypy sees str | None from the
+    # os.environ.get() dict but can't follow the guard through the dict lookup.
+    host: str = values["SMTP_HOST"]  # type: ignore[assignment]
+    user: str = values["SMTP_USER"]  # type: ignore[assignment]
+    password: str = values["SMTP_PASSWORD"]  # type: ignore[assignment]
 
     try:
         if port == 465:

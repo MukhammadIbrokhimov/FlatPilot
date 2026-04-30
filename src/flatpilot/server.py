@@ -82,10 +82,10 @@ def _spawn_apply(flat_id: int) -> dict:
             timeout=timeout_sec,
         )
     except subprocess.TimeoutExpired as exc:
-        captured = (exc.stdout or "") + (exc.stderr or "")
-        tail_body = captured[-2000:].strip()
+        captured = (exc.stdout or "") + (exc.stderr or "")  # type: ignore[operator]
+        tail_body = captured[-2000:].strip()  # type: ignore[str-bytes-safe]
         prefix = f"timed out after {timeout_sec}s"
-        tail = f"{prefix}\n{tail_body}".strip() if tail_body else prefix
+        tail = f"{prefix}\n{tail_body}".strip() if tail_body else prefix  # type: ignore[str-bytes-safe]
         return {
             "ok": False,
             "returncode": None,

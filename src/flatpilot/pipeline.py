@@ -168,5 +168,5 @@ def insert_flat(conn: sqlite3.Connection, flat, platform: str, now: str) -> bool
         return False
     from flatpilot.matcher.dedup import assign_canonical
 
-    assign_canonical(conn, cursor.lastrowid)
+    assign_canonical(conn, cursor.lastrowid)  # type: ignore[arg-type]  # non-None when rowcount > 0
     return True

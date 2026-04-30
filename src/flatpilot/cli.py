@@ -226,7 +226,7 @@ def scrape(
             # non-None frozenset, so the None branch is unreachable here;
             # an empty frozenset is rendered as "no cities".
             supported = scraper_cls.supported_cities
-            cities_label = ", ".join(sorted(supported)) or "no cities"
+            cities_label = ", ".join(sorted(supported)) or "no cities"  # type: ignore[arg-type]
             console.print(
                 f"[red]{platform}: city {profile.city!r} not supported "
                 f"(supports: {cities_label})[/red]"

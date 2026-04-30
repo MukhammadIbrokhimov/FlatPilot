@@ -23,7 +23,7 @@ def test_run_scrape_pass_passes_known_ids_from_db(
     from datetime import UTC, datetime
 
     from flatpilot import database
-    from flatpilot.cli import _run_scrape_pass
+    from flatpilot.pipeline import run_scrape_pass
     from flatpilot.profile import Profile
     from flatpilot.scrapers import inberlinwohnen as ib
     from flatpilot.scrapers import wg_gesucht as wg
@@ -60,7 +60,7 @@ def test_run_scrape_pass_passes_known_ids_from_db(
     profile = Profile.load_example().model_copy(update={"city": "Berlin"})
     console = Console(record=True)
     scrapers = [ib.InBerlinWohnenScraper(), wg.WGGesuchtScraper()]
-    _run_scrape_pass(scrapers, profile, console)
+    run_scrape_pass(scrapers, profile, console)
 
     assert captured["inberlinwohnen"] == frozenset({"16344", "16343"})
     assert captured["wg_gesucht"] == frozenset({"9999"})

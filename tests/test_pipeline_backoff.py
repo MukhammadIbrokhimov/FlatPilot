@@ -60,17 +60,17 @@ def _make_profile() -> Any:
 
 
 def test_rate_limit_triggers_backoff_and_next_pass_skips(tmp_db) -> None:
-    from flatpilot.cli import _run_scrape_pass
+    from flatpilot.pipeline import run_scrape_pass
     from flatpilot.scrapers.session import RateLimitedError
 
     console = _Recorder()
     scraper = _FakeScraper([RateLimitedError("fake: HTTP 429"), []])
 
-    _run_scrape_pass([scraper], _make_profile(), console)
+    run_scrape_pass([scraper], _make_profile(), console)
     assert any("429" in line or "rate" in line.lower() for line in console.lines)
 
     console.lines.clear()
-    _run_scrape_pass([scraper], _make_profile(), console)
+    run_scrape_pass([scraper], _make_profile(), console)
     # Second pass must NOT have called fetch_new — pop would have
     # returned []; the scraper list still has one behaviour left.
     assert len(scraper._behaviours) == 1
@@ -80,12 +80,12 @@ def test_rate_limit_triggers_backoff_and_next_pass_skips(tmp_db) -> None:
 def test_challenge_triggers_backoff_and_longer_cool_off(tmp_db) -> None:
     from datetime import UTC, datetime
 
-    from flatpilot.cli import _run_scrape_pass
+    from flatpilot.pipeline import run_scrape_pass
     from flatpilot.scrapers.backoff import _state
     from flatpilot.scrapers.session import ChallengeDetectedError
 
     scraper = _FakeScraper([ChallengeDetectedError("fake: captcha")])
-    _run_scrape_pass([scraper], _make_profile(), _Recorder())
+    run_scrape_pass([scraper], _make_profile(), _Recorder())
 
     st = _state["fake"]
     assert st.last_kind == "challenge"
@@ -97,18 +97,18 @@ def test_challenge_triggers_backoff_and_longer_cool_off(tmp_db) -> None:
 
 
 def test_successful_pass_clears_backoff(tmp_db) -> None:
-    from flatpilot.cli import _run_scrape_pass
+    from flatpilot.pipeline import run_scrape_pass
     from flatpilot.scrapers.backoff import _state
     from flatpilot.scrapers.session import RateLimitedError
 
     scraper = _FakeScraper([RateLimitedError("fake: HTTP 503"), []])
-    _run_scrape_pass([scraper], _make_profile(), _Recorder())
+    run_scrape_pass([scraper], _make_profile(), _Recorder())
     assert "fake" in _state
 
     # Skip the cool-off artificially by clearing skip_until so the next
     # pass actually calls fetch_new.
     _state["fake"].skip_until = None
-    _run_scrape_pass([scraper], _make_profile(), _Recorder())
+    run_scrape_pass([scraper], _make_profile(), _Recorder())
 
     # After a success, state for this platform must be gone entirely.
     assert "fake" not in _state
@@ -116,9 +116,9 @@ def test_successful_pass_clears_backoff(tmp_db) -> None:
 
 def test_generic_exception_does_not_feed_backoff(tmp_db) -> None:
     """Bugs aren't site signals. Random exceptions must not extend the cool-off."""
-    from flatpilot.cli import _run_scrape_pass
+    from flatpilot.pipeline import run_scrape_pass
     from flatpilot.scrapers.backoff import _state
 
     scraper = _FakeScraper([RuntimeError("bad parser")])
-    _run_scrape_pass([scraper], _make_profile(), _Recorder())
+    run_scrape_pass([scraper], _make_profile(), _Recorder())
     assert "fake" not in _state

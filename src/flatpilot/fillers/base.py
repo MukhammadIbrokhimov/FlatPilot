@@ -21,8 +21,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar, Protocol
 
+from flatpilot.errors import FlatPilotError
 
-class FillError(RuntimeError):
+
+class FillError(FlatPilotError):
     """Base class for all filler errors."""
 
 

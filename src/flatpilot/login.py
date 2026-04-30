@@ -24,6 +24,7 @@ from pathlib import Path
 
 from rich.console import Console
 
+from flatpilot.errors import FlatPilotError
 from flatpilot.scrapers import wg_gesucht as _wg
 from flatpilot.scrapers.base import session_dir
 from flatpilot.scrapers.session import (
@@ -34,11 +35,11 @@ from flatpilot.scrapers.session import (
 from flatpilot.scrapers.session import page as session_page
 
 
-class UnknownPlatformError(ValueError):
+class UnknownPlatformError(FlatPilotError):
     """No login recipe registered for the requested platform."""
 
 
-class ContainerDetectedError(RuntimeError):
+class ContainerDetectedError(FlatPilotError):
     """`flatpilot login` needs a visible browser and cannot run in Docker."""
 
 

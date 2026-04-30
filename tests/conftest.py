@@ -9,7 +9,9 @@ each test starts from a clean, isolated database.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -54,3 +56,82 @@ def tmp_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         yield conn
     finally:
         database.close_conn()
+
+
+@pytest.fixture
+def berlin_profile():
+    from flatpilot.profile import Profile
+
+    return Profile.load_example().model_copy(update={"city": "Berlin"})
+
+
+def make_session_fakes(
+    html_by_url: dict[str, str] | None = None,
+    *,
+    default_html: str = "<html><body></body></html>",
+    goto_log: list[str] | None = None,
+    captured: dict[str, Any] | None = None,
+    locator_count: int = 0,
+    status_fn: Callable[[str], int] | None = None,
+) -> tuple[type, type]:
+    """Return a (polite_session_cls, session_page_cls) stub pair.
+
+    html_by_url:   URL → HTML; unmatched URLs return default_html.
+    default_html:  HTML for URLs absent from html_by_url (default: empty page).
+    goto_log:      list to append each goto() URL to.
+    captured:      dict that receives the SessionConfig as captured["config"].
+    locator_count: return value for page.locator(...).count().
+    status_fn:     URL → HTTP status code; defaults to always 200.
+    """
+    _html: dict[str, str] = html_by_url or {}
+    _log = goto_log
+    _cap = captured
+    _status: Callable[[str], int] = status_fn or (lambda _u: 200)
+
+    class _FakeCtxMgr:
+        def __init__(self, config: Any) -> None:
+            if _cap is not None:
+                _cap["config"] = config
+
+        def __enter__(self) -> Any:
+            return object()
+
+        def __exit__(self, *_exc: Any) -> None:
+            return None
+
+    class _FakePageCtxMgr:
+        def __init__(self, _ctx: Any) -> None:
+            pass
+
+        def __enter__(self) -> Any:
+            class _L:
+                def count(self) -> int:
+                    return locator_count
+
+            class _P:
+                def __init__(self) -> None:
+                    self._url: str | None = None
+
+                def goto(self, url: str, **_kw: Any) -> Any:
+                    if _log is not None:
+                        _log.append(url)
+                    self._url = url
+
+                    class _R:
+                        pass
+
+                    _R.status = _status(url)
+                    return _R()
+
+                def locator(self, _sel: str) -> Any:
+                    return _L()
+
+                def content(self) -> str:
+                    return _html.get(self._url or "", default_html)
+
+            return _P()
+
+        def __exit__(self, *_exc: Any) -> None:
+            return None
+
+    return _FakeCtxMgr, _FakePageCtxMgr

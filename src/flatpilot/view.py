@@ -20,6 +20,7 @@ deterministic.
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from html import escape
 from pathlib import Path
@@ -40,7 +41,7 @@ _APPLICATION_STATUSES: tuple[str, ...] = (
 )
 
 
-def generate_html(conn: Any = None) -> str:
+def generate_html(conn: sqlite3.Connection | None = None) -> str:
     """Render the full dashboard HTML against the current DB state."""
     init_db()
     if conn is None:
@@ -100,7 +101,7 @@ def generate() -> Path:
     return path
 
 
-def _load_applications(conn: Any) -> list[dict[str, Any]]:
+def _load_applications(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
         SELECT id, flat_id, platform, listing_url, title,

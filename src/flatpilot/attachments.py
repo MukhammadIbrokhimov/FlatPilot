@@ -20,10 +20,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from flatpilot.config import ATTACHMENTS_DIR
+from flatpilot.errors import FlatPilotError
 from flatpilot.profile import Profile
 
 
-class AttachmentError(RuntimeError):
+class AttachmentError(FlatPilotError):
     pass
 
 

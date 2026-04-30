@@ -14,7 +14,11 @@ fillers/) stay where they are used.
 from __future__ import annotations
 
 
-class ProfileMissingError(RuntimeError):
+class FlatPilotError(Exception):
+    """Base class for all project-level FlatPilot exceptions."""
+
+
+class ProfileMissingError(FlatPilotError, RuntimeError):
     """Raised when an entry point runs before ``flatpilot init``.
 
     Both ``apply_to_flat`` and ``run_match`` short-circuit when
@@ -23,7 +27,7 @@ class ProfileMissingError(RuntimeError):
     """
 
 
-class UnknownCityError(ValueError):
+class UnknownCityError(FlatPilotError, ValueError):
     """Raised by a scraper when ``profile.city`` has no platform city ID mapped.
 
     Each scraper keeps its own ``CITY_IDS`` table (the ID format is

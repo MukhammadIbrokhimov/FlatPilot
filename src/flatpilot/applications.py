@@ -9,13 +9,14 @@ connection via ``flatpilot.database.get_conn()``.
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime
 from typing import Literal
 
 ResponseStatus = Literal["viewing_invited", "rejected", "no_response"]
 
 
-def record_skip(conn, *, match_id: int, profile_hash: str) -> None:
+def record_skip(conn: sqlite3.Connection, *, match_id: int, profile_hash: str) -> None:
     """Insert a 'skipped' matches row for the flat referenced by ``match_id``.
 
     Audit-preserving: leaves the original 'match' row alone. Idempotent
@@ -41,7 +42,7 @@ def record_skip(conn, *, match_id: int, profile_hash: str) -> None:
 
 
 def record_response(
-    conn,
+    conn: sqlite3.Connection,
     *,
     application_id: int,
     status: ResponseStatus,

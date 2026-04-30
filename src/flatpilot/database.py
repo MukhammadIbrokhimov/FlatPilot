@@ -14,7 +14,6 @@ from pathlib import Path
 
 from flatpilot.config import DB_PATH, ensure_dirs
 
-
 # table_name -> full ``CREATE TABLE IF NOT EXISTS ...`` statement
 SCHEMAS: dict[str, str] = {}
 

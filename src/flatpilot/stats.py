@@ -7,7 +7,7 @@ small — anything richer should live closer to its caller.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TypedDict
 
 from flatpilot.database import get_conn
@@ -28,7 +28,7 @@ def get_stats() -> Stats:
 
     total_flats = conn.execute("SELECT COUNT(*) FROM flats").fetchone()[0]
 
-    since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    since = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
     new_last_24h = conn.execute(
         "SELECT COUNT(*) FROM flats WHERE first_seen_at >= ?",
         (since,),

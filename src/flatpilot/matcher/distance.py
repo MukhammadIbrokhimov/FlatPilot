@@ -23,7 +23,7 @@ import logging
 import math
 import time
 from collections.abc import Mapping
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -31,7 +31,6 @@ import httpx
 from flatpilot import __version__
 from flatpilot.config import GEOCODE_CACHE_PATH, ensure_dirs
 from flatpilot.profile import Profile
-
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +77,8 @@ def _entry_fresh(entry: Mapping[str, Any]) -> bool:
     except (KeyError, ValueError):
         return False
     if cached_at.tzinfo is None:
-        cached_at = cached_at.replace(tzinfo=timezone.utc)
-    return datetime.now(timezone.utc) - cached_at < CACHE_TTL
+        cached_at = cached_at.replace(tzinfo=UTC)
+    return datetime.now(UTC) - cached_at < CACHE_TTL
 
 
 def _throttle() -> None:
@@ -119,7 +118,7 @@ def geocode(address: str) -> tuple[float, float] | None:
         logger.warning("Nominatim request failed for %r: %s", address, exc)
         return None
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     if not results:
         cache[key] = {"lat": None, "lng": None, "cached_at": now}
         _save_cache(cache)

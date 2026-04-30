@@ -76,6 +76,65 @@ class Attachments(BaseModel):
     per_platform: dict[str, list[str]] = Field(default_factory=dict)
 
 
+class AutoApplySettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    daily_cap_per_platform: dict[str, int] = Field(
+        default_factory=lambda: {
+            "wg-gesucht": 20,
+            "kleinanzeigen": 20,
+            "inberlinwohnen": 20,
+        }
+    )
+    cooldown_seconds_per_platform: dict[str, int] = Field(
+        default_factory=lambda: {
+            "wg-gesucht": 120,
+            "kleinanzeigen": 120,
+            "inberlinwohnen": 120,
+        }
+    )
+    max_failures_per_flat: int = Field(default=3, ge=1)
+    pacing_seconds_per_platform: dict[str, int] = Field(
+        default_factory=lambda: {
+            "wg-gesucht": 0, "kleinanzeigen": 0, "inberlinwohnen": 0,
+        }
+    )
+
+
+class SavedSearch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_-]+$")
+    auto_apply: bool = False
+
+    rent_min_warm: int | None = Field(default=None, ge=0)
+    rent_max_warm: int | None = Field(default=None, ge=0)
+    rooms_min: int | None = Field(default=None, ge=1)
+    rooms_max: int | None = Field(default=None, ge=1)
+    district_allowlist: list[str] | None = None
+    radius_km: int | None = Field(default=None, ge=0, le=500)
+    furnished_pref: FurnishedPref | None = None
+    min_contract_months: int | None = Field(default=None, ge=0)
+
+    platforms: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _ranges_are_ordered(self) -> SavedSearch:
+        if (
+            self.rent_min_warm is not None
+            and self.rent_max_warm is not None
+            and self.rent_max_warm < self.rent_min_warm
+        ):
+            raise ValueError("rent_max_warm must be >= rent_min_warm")
+        if (
+            self.rooms_min is not None
+            and self.rooms_max is not None
+            and self.rooms_max < self.rooms_min
+        ):
+            raise ValueError("rooms_max must be >= rooms_min")
+        return self
+
+
 class Profile(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -107,6 +166,8 @@ class Profile(BaseModel):
     wbs: WBS = Field(default_factory=WBS)
     notifications: Notifications = Field(default_factory=Notifications)
     attachments: Attachments = Field(default_factory=Attachments)
+    auto_apply: AutoApplySettings = Field(default_factory=AutoApplySettings)
+    saved_searches: list[SavedSearch] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _ranges_are_ordered(self) -> Profile:
@@ -114,6 +175,15 @@ class Profile(BaseModel):
             raise ValueError("rent_max_warm must be >= rent_min_warm")
         if self.rooms_max < self.rooms_min:
             raise ValueError("rooms_max must be >= rooms_min")
+        return self
+
+    @model_validator(mode="after")
+    def _saved_search_names_unique(self) -> Profile:
+        names = [ss.name for ss in self.saved_searches]
+        if len(names) != len(set(names)):
+            raise ValueError(
+                f"duplicate saved-search names: {names}"
+            )
         return self
 
     @model_validator(mode="after")

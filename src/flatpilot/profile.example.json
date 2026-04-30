@@ -35,5 +35,18 @@
   "attachments": {
     "default": [],
     "per_platform": {}
-  }
+  },
+  "auto_apply": {
+    "daily_cap_per_platform": {
+      "wg-gesucht": 20,
+      "kleinanzeigen": 20,
+      "inberlinwohnen": 20
+    },
+    "cooldown_seconds_per_platform": {
+      "wg-gesucht": 120,
+      "kleinanzeigen": 120,
+      "inberlinwohnen": 120
+    }
+  },
+  "saved_searches": []
 }

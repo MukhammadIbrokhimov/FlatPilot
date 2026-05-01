@@ -260,3 +260,113 @@ def test_run_pipeline_once_skip_apply_does_not_call_apply_stage(tmp_db, monkeypa
 
     run_pipeline_once(profile, Console(), skip_apply=True)
     assert called["apply"] is False
+
+
+# --- safety-rail integration: cap-exhausted + cooldown-active ---------
+# The existing _seed_flat helper at line 25 hard-codes external_id='e1',
+# so calling it twice trips the (platform, external_id) UNIQUE
+# constraint. The new tests need 2-3 distinct flats each, so we add a
+# local helper rather than mutating the existing one (which the older
+# tests rely on).
+
+
+def _seed_flat_with(conn, *, external_id, platform="wg-gesucht"):
+    """Like _seed_flat but with caller-supplied external_id (UNIQUE)."""
+    now = datetime.now(UTC).isoformat()
+    cur = conn.execute(
+        "INSERT INTO flats (external_id, platform, listing_url, title, "
+        "scraped_at, first_seen_at, requires_wbs) "
+        "VALUES (?, ?, 'https://x', 'T', ?, ?, 0)",
+        (external_id, platform, now, now),
+    )
+    return cur.lastrowid
+
+
+def test_daily_cap_exhausted_skips_pending_match(tmp_db):
+    from flatpilot.auto_apply import run_pipeline_apply
+    from flatpilot.profile import AutoApplySettings, profile_hash
+
+    base = _profile_with_one_auto_search()
+    profile = base.model_copy(
+        update={
+            "auto_apply": AutoApplySettings(
+                daily_cap_per_platform={"wg-gesucht": 2},
+                cooldown_seconds_per_platform={"wg-gesucht": 0},
+                pacing_seconds_per_platform={"wg-gesucht": 0},
+            )
+        }
+    )
+    save_profile(profile)
+    today = datetime.now(UTC).isoformat()
+
+    # Seed 2 submitted rows = cap reached. Each prior flat gets a
+    # unique external_id so the UNIQUE constraint holds.
+    for i in range(2):
+        prior_flat = _seed_flat_with(tmp_db, external_id=f"prior-{i}")
+        tmp_db.execute(
+            "INSERT INTO applications "
+            "(flat_id, platform, listing_url, title, applied_at, method, "
+            " attachments_sent_json, status) "
+            "VALUES (?, 'wg-gesucht', 'https://x', 'T', ?, 'auto', '[]', 'submitted')",
+            (prior_flat, today),
+        )
+
+    pending_flat = _seed_flat_with(tmp_db, external_id="pending")
+    _seed_match(
+        tmp_db,
+        flat_id=pending_flat,
+        profile_hash=profile_hash(profile),
+        matched_saved_searches=["ss1"],
+    )
+
+    with patch("flatpilot.auto_apply.apply_to_flat") as mocked:
+        run_pipeline_apply(profile, Console())
+
+    mocked.assert_not_called()
+    new_apps = tmp_db.execute(
+        "SELECT COUNT(*) FROM applications WHERE flat_id = ?", (pending_flat,)
+    ).fetchone()[0]
+    assert new_apps == 0
+
+
+def test_active_cooldown_skips_pending_match(tmp_db):
+    from datetime import timedelta
+
+    from flatpilot.auto_apply import run_pipeline_apply
+    from flatpilot.profile import AutoApplySettings, profile_hash
+
+    base = _profile_with_one_auto_search()
+    profile = base.model_copy(
+        update={
+            "auto_apply": AutoApplySettings(
+                daily_cap_per_platform={"wg-gesucht": 100},
+                cooldown_seconds_per_platform={"wg-gesucht": 120},
+                pacing_seconds_per_platform={"wg-gesucht": 0},
+            )
+        }
+    )
+    save_profile(profile)
+
+    # One submitted row 30s ago → 90s cooldown remaining > 0.
+    prior_flat = _seed_flat_with(tmp_db, external_id="prior-cool")
+    recent = (datetime.now(UTC) - timedelta(seconds=30)).isoformat()
+    tmp_db.execute(
+        "INSERT INTO applications "
+        "(flat_id, platform, listing_url, title, applied_at, method, "
+        " attachments_sent_json, status) "
+        "VALUES (?, 'wg-gesucht', 'https://x', 'T', ?, 'auto', '[]', 'submitted')",
+        (prior_flat, recent),
+    )
+
+    pending_flat = _seed_flat_with(tmp_db, external_id="pending-cool")
+    _seed_match(
+        tmp_db,
+        flat_id=pending_flat,
+        profile_hash=profile_hash(profile),
+        matched_saved_searches=["ss1"],
+    )
+
+    with patch("flatpilot.auto_apply.apply_to_flat") as mocked:
+        run_pipeline_apply(profile, Console())
+
+    mocked.assert_not_called()

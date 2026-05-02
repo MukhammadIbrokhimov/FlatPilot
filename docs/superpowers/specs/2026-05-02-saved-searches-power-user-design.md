@@ -94,17 +94,23 @@ For each match row, given `matched_saved_searches_json` and the profile's saved-
      - Overrides with `enabled=False` contribute nothing to the fire set.
      - If every override has `enabled=False`: channel is suppressed for this match (no fires, base also does not fire — definers replaced base).
 
-3. Multiple definers on the same channel each contribute their own (channel, resolved transport) tuple. Identical resolved transports collapse via signature dedup (Section 4.3).
+3. Multiple definers on the same channel each contribute their own (channel, resolved transport) tuple. Identical resolved transports collapse via signature dedup (Section 4.3); distinct resolved transports each fire separately.
 
 **Why this composes well:**
 - A non-defining matched search never silences anything (no surprise suppression — the I1 problem is gone).
 - The bead's stated example *"Telegram me only for kreuzberg-2br matches"* is expressed as `notifications.email.enabled=False` on `kreuzberg-2br`, which actively suppresses email for that search's matches.
 - The roommate routing case from Q2/B works: a saved search with `telegram.enabled=True, chat_id="roommate_chat"` replaces base's solo chat for matches against that search.
 
-**Worked dual-match example:** base = `{telegram=solo_chat, email=base}`. `kreuzberg-2br.notifications = {telegram: enabled=True chat=k_chat, email: None}`. `spandau-cheap.notifications = None`. A flat matches both.
+**Multi-definer caveat (read carefully).** "Definers replace base" applies *per channel*, not *per send*. If two distinct definers each have `enabled=True` overrides on the same channel that resolve to *different* transports, both fire. In particular, a definer with `enabled=True` and all transport fields `None` (i.e. inherit base) resolves to base values and produces signature `<channel>:base` — which fires alongside any sibling definer's transport-specific override. This is intentional: it's the only way for a saved search to express *"enable this channel even if base has it disabled"* without committing to an alternate transport. Users who want strict single-routing should ensure each search either fully overrides the transport or omits the channel entirely.
+
+**Worked dual-match example A (no transport collision):** base = `{telegram=solo_chat, email=base}`. `kreuzberg-2br.notifications = {telegram: enabled=True chat=k_chat, email: None}`. `spandau-cheap.notifications = None`. A flat matches both.
 - Telegram: overrides_for_ch = `[{enabled=True chat=k_chat}]`. Non-empty, definer replaces base → fire telegram@k_chat (NOT base's solo_chat).
 - Email: overrides_for_ch = `[]`. Empty → fire base email.
 - Result: telegram@k_chat + email base.
+
+**Worked dual-match example B (multiple definers, distinct transports).** base = `{telegram=solo_chat}`. `kreuzberg-2br.notifications = {telegram: enabled=True, chat=k_chat}`. `roommate-3br.notifications = {telegram: enabled=True, all transport fields None}`. A flat matches both.
+- Telegram: overrides_for_ch = `[{chat=k_chat}, {chat=None→solo_chat}]`. Two distinct resolved transports → both fire.
+- Result: telegram@k_chat + telegram@solo_chat. The user gets pinged in **both** chats. This is the documented behavior of mixed-transport multi-definer matches.
 
 ### 4.2 Per-channel transport resolution
 
@@ -124,9 +130,13 @@ Today `notified_channels_json` stores bare channel names. Under the new model it
 
 **Canonicalization rule:** after resolving the transport (Section 4.2), compare the resolved values to the base profile's values for that channel. **If the resolved transport equals base's transport for every field, signature is `"<channel>:base"` regardless of which code path produced it.** This is load-bearing — without it, an override of `bot_token_env="TELEGRAM_BOT_TOKEN"` (which happens to equal base's default) would produce a different signature than the no-override path and double-fire on legacy rows.
 
-Per-canonical (`sent_canonicals` in `dispatcher.py:159`) and per-match dedup both key off the signature, **not** the bare channel name. The existing `sent_canonicals[canonical_id]: set[str]` becomes `set[signature]` — no schema change, just key discipline.
+Per-canonical (`sent_canonicals` in `dispatcher.py:159`) and per-match dedup both key off the signature, **not** the bare channel name. The existing `sent_canonicals[canonical_id]: set[str]` becomes `set[signature]`.
+
+**Loop-body restructure required.** The current dispatcher loop (`dispatcher.py:159-192`) iterates `enabled_channels(profile)` (a list of bare channel names computed once per dispatch) and checks each against `notified | already_for_canonical`. Under the new model, the list of channels-to-consider is *per-match-row*: it's the (channel, signature, transport-kwargs) tuples produced by Section 4.1's per-channel resolution. So the loop body shifts from "for each channel in the global list, decide if pending" to "for each per-match (channel, signature, transport) tuple from this row's resolution, decide if pending against `notified | already_for_canonical` (now signature sets)." This is a structural rewrite of the loop body, not just a key swap; Section 8's ~90 LOC for `dispatcher.py` accounts for it.
 
 **Backwards-compat parse:** rows containing bare channel names (`["telegram", "email"]`) are interpreted as `["telegram:base", "email:base"]`. Combined with the canonicalization rule, this guarantees: any match that under the old code path would have fired `(channel, base transport)` carries signature `<channel>:base` under the new code path too. **Invariant:** matches with no overriding definers always produce signatures of the form `<channel>:base`. Existing pending notifications never re-fire.
+
+**Forward-write upgrade.** When the dispatcher fires a remaining-pending channel on a row whose `notified_channels_json` originally held legacy bare names, the writeback uses the new signature format. Example: row had `["telegram"]` (legacy), email is still pending, base resolves to no override → after firing email, writeback is `["email:base", "telegram:base"]`. Subsequent reads parse the upgraded format directly. Mixed legacy/new content cannot occur within a single row after any post-rollout fire.
 
 ### 4.4 Adapter signature change
 
@@ -147,6 +157,7 @@ When a kwarg is `None` the adapter reads from the profile (today's behavior). Wh
 - Saved-search defines `notifications.email.enabled=True` but no override AND base has no usable `smtp_env` → log a warning, skip that channel for that match, dispatch continues. Consistent with today's `_email_recipient()` `None` handling.
 - `bot_token_env` resolves to a missing env var → telegram_adapter raises `TelegramError`, dispatcher already catches and logs.
 - A matched search references a saved-search **name not present in the current profile** (e.g. saved search was deleted between match-time and dispatch-time): treat as a non-definer (silent), log debug. The hash rotation that fires on profile edits would normally suppress these rows via `_mark_stale_matches_notified`, but a profile-edit-then-`flatpilot notify`-without-`flatpilot match` race could leak through.
+- The same race exists for the auto-apply path (`auto_apply.py:158` reads `matched_saved_searches_json`). Verified handled at `auto_apply.py:180-182`: `saved_search_by_name.get(name)` returns `None`, the loop `continue`s. No spec change to `auto_apply.py` required.
 
 ### 4.6 `send_test`
 
@@ -195,10 +206,11 @@ Per Q4/C — **tiered**: 4 minimal prompts plus an optional filter-overrides bra
    - If both channels are "no opinion" → store `notifications=None` (avoid persisting an empty `SavedSearchNotifications` block).
    - If no → `notifications=None`.
 5. **Filter overrides** — `Confirm.ask "Customize filter overrides for this search? [y/N]"` (default: edit → any overlay field is non-`None`; add → False).
-   - If yes, walk 8 overlay prompts. Input grammar varies by field type:
-     - `rent_min_warm`, `rent_max_warm`, `rooms_min`, `rooms_max`, `radius_km`, `min_contract_months` (int | None): blank input → `None` (inherit base).
-     - `district_allowlist` (list[str] | None): the prompt is `"Districts (comma-separated; blank=inherit base; '-'=no district restriction)"`. Blank → `None`. Literal `-` → `[]` (override-to-empty, i.e. allow any district even if base restricts). Anything else → comma-split list.
-     - `furnished_pref` (Literal | None): `Prompt.ask` with `choices=["any", "furnished", "unfurnished", "inherit"]`, default `"inherit"` if currently `None` else current value. `"inherit"` → `None`.
+   - If yes, walk the 8 overlay prompts. Two prompt patterns based on field type:
+     - **Int fields** (`rent_min_warm`, `rent_max_warm`, `rooms_min`, `rooms_max`, `radius_km`, `min_contract_months`): single prompt; blank input → `None` (inherit base). Matches existing `_prompt_optional_int` (`wizard/init.py:352-367`).
+     - **List/Literal fields** (`district_allowlist`, `furnished_pref`): two-step *override-then-value* pattern (matches the parent step 5 question's UX, applied per field):
+       - `district_allowlist`: `Confirm.ask "Override district allowlist for this search? [y/N]"` (default: edit → `current is not None`; add → False). If no → `None`. If yes → `Prompt.ask "Districts (comma-separated; blank = any district)"`. Blank input → `[]` (override-to-empty); `"kreuzberg, mitte"` → `["kreuzberg", "mitte"]`.
+       - `furnished_pref`: `Confirm.ask "Override furnished preference for this search? [y/N]"`. If no → `None`. If yes → `Prompt.ask` with `choices=["any", "furnished", "unfurnished"]`. No undiscoverable sentinel needed.
 
 After save, return to top menu and reprint the table.
 
@@ -236,9 +248,9 @@ Pydantic re-validates the whole `Profile` at the existing point in the wizard (`
 
 ### Risk 1 — Channel replacement, not addition
 
-Under semantic A″, defining a channel for a saved search **replaces** base profile's setting for that channel on matching flats. A user setting `kreuzberg-2br.telegram.chat_id="k_chat"` will no longer get those matches in their base solo chat — pings route only to `k_chat`. This is the intended Q2/B behavior, but it's worth surfacing in the wizard so the user doesn't expect "additional" routing.
+Under semantic A″, defining a channel for a saved search **replaces** base profile's setting for that channel on matching flats. A user setting `kreuzberg-2br.telegram.chat_id="k_chat"` will no longer get those matches in their base solo chat — pings route only to `k_chat`, *provided no other matched search also has a definer for telegram*. When two matched searches both have telegram definers, signature dedup applies: identical resolved transports collapse to one send, distinct transports each fire (Section 4.1's "Multi-definer caveat" and worked example B). This is the intended Q2/B behavior, but it's worth surfacing in the wizard so the user doesn't expect "additional" routing in the single-definer case or "single send" in the multi-definer case.
 
-**Mitigation:** the wizard's notifications-override explainer (Section 5.2 step 4) frames it explicitly: *"For each channel you set here, this search **replaces** base profile's setting."* No "surprise silencing" failure mode like A/I1 had — non-defining searches contribute nothing, so they can never silence channels.
+**Mitigation:** the wizard's notifications-override explainer (Section 5.2 step 4) frames it explicitly: *"For each channel you set here, this search **replaces** base profile's setting for matches against this search alone. If two of your saved searches both override the same channel and a flat matches both, you may be pinged on each distinct destination."* No "surprise silencing" failure mode like A/I1 had — non-defining searches contribute nothing, so they can never silence channels.
 
 ### Risk 2 — Profile-hash rotation drops queued notifications
 
@@ -296,9 +308,15 @@ Once we write signatures like `"telegram:chat=123"`, downgrading to a previous F
 - Override resolves to base values for every transport field → signature is `"telegram:base"` (NOT `"telegram:bot=...,chat=..."`). Codifies the canonicalization invariant from Section 4.3.
 - Override differs from base on at least one field → signature includes the differing values.
 - `sent_canonicals` per-canonical dedup uses signatures (not bare channel names): two match rows in the same canonical cluster, one with override, one without — both fire (different signatures), but a third row matching the same override in the same cluster is deduped.
+- **Cross-row dedup with mixed enable/disable:** two match rows in the same canonical cluster, one with `enabled=True` override and one with `enabled=False` override on the same channel. The disabled row contributes nothing to its own fire set; the enabled row fires once and is recorded in `sent_canonicals`. A third row in the cluster with no override would, under canonicalization, dedup against the enabled row's signature only if the resolved transports match — confirms `sent_canonicals` carries signatures across all rows in a canonical cluster.
+
+**Multi-definer cases (Section 4.1 worked example B):**
+- Definer X with `enabled=True, all transport fields None` plus definer Y with `enabled=True, chat_id="B"` on the same channel → two distinct signatures (`<channel>:base` and `<channel>:chat=B`) both fire. Codifies the multi-definer caveat in Section 4.1.
 
 **Backwards-compat:**
 - `notified_channels_json=["telegram", "email"]` (legacy) treated as `["telegram:base", "email:base"]`. A new pending dispatch that resolves to `<channel>:base` does not re-fire.
+- `notified_channels_json='[]'` (empty array, the schema default) parses to empty set; pending dispatch fires normally and writes the new signature format. Regression test against accidental "missing column" handling regressions.
+- **Forward-write upgrade:** row had `["telegram"]` (legacy, partial), email is still pending under no-override → after dispatch, row contains `["email:base", "telegram:base"]` (new format). Verify by reading the row post-dispatch and confirming both legacy and new entries coexist as upgraded signatures.
 - Profile edit re-keys matches — adding a saved search bumps `profile_hash`, `_mark_stale_matches_notified` suppresses old rows. Regression test pinning Risk 2 behavior.
 
 **Edge cases:**
@@ -306,11 +324,12 @@ Once we write signatures like `"telegram:chat=123"`, downgrading to a previous F
 
 ### Wizard (`tests/test_wizard.py`)
 
-- Pure helpers (regex name validation, platforms parser, district-allowlist parser with `-` sentinel, furnished-pref parser with `inherit` choice, transport-override builder) get unit tests.
+- Pure helpers (regex name validation, platforms parser, transport-override builder) get unit tests.
 - Menu loop integration test: patch `Prompt.ask`/`Confirm.ask` in sequence; drive add → edit → caps → done. Two start-states: empty profile and existing `auto-default`.
 - Edit branch with "customize filter overrides? = no" leaves overlay fields `None`.
-- Edit branch with "customize filter overrides? = yes" — district_allowlist input cases: blank → `None`, `"-"` → `[]`, `"kreuzberg, mitte"` → `["kreuzberg", "mitte"]`.
-- Edit branch — furnished_pref input cases: `"inherit"` → `None`, `"any"` → `"any"`, etc.
+- Edit branch with "customize filter overrides? = yes":
+  - district_allowlist: "Override district allowlist? = no" → `None`. "Override = yes" + blank list input → `[]`. "Override = yes" + `"kreuzberg, mitte"` → `["kreuzberg", "mitte"]`.
+  - furnished_pref: "Override furnished preference? = no" → `None`. "Override = yes" + `"any"` → `"any"`.
 - Delete sub-flow: typing wrong name aborts; typing right name removes; menu reprints with renumbered indices.
 - Caps menu: iterates `daily_cap_per_platform.keys()` sorted; blank input keeps current value.
 - Re-run with existing `auto-default` enters the menu (no longer silently skipped).
@@ -350,5 +369,6 @@ Single PR, single commit (or stack of small commits) on `feat/saved-searches-pow
 - **Wizard slot:** after Notifications, before Review.
 - **`auto-default` status:** no special protection; deletable like any other.
 - **Wizard re-prompt vs. validator-after-save:** invalid name pattern re-prompts inline; pydantic validator is the last-line check.
-- **Non-int overlay grammars:** `district_allowlist` uses `-` sentinel for override-to-empty; `furnished_pref` uses an explicit `inherit` choice.
+- **Non-int overlay grammars:** `district_allowlist` and `furnished_pref` use a two-step *override?-then-value* prompt pattern (no sentinels, no extra choice values to teach). Int fields keep the existing single-prompt blank-equals-inherit pattern from `_prompt_optional_int`.
+- **Multi-definer transport collisions:** when two definers on the same channel resolve to distinct transports, both fire (signature dedup at `<channel>:resolved`). An all-`None` `enabled=True` override resolves to base values and produces signature `<channel>:base`, which can fire alongside a sibling's transport-specific override.
 - **Profile-hash rotation:** documented as expected; users edit-then-`flatpilot run` (which re-matches) rather than edit-then-`flatpilot notify`.

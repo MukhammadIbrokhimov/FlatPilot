@@ -3,7 +3,13 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from flatpilot.profile import Profile, SavedSearch
+from flatpilot.profile import (
+    EmailNotificationOverride,
+    Profile,
+    SavedSearch,
+    SavedSearchNotifications,
+    TelegramNotificationOverride,
+)
 
 
 def test_minimal_saved_search_loads():
@@ -105,13 +111,6 @@ def test_example_profile_demonstrates_auto_apply_shape():
     assert isinstance(p.saved_searches, list)
 
 
-from flatpilot.profile import (
-    EmailNotificationOverride,
-    SavedSearchNotifications,
-    TelegramNotificationOverride,
-)
-
-
 def test_saved_search_notifications_default_none():
     ss = SavedSearch(name="x")
     assert ss.notifications is None
@@ -145,17 +144,11 @@ def test_telegram_override_round_trip_preserves_none():
 
 
 def test_saved_search_notifications_extra_forbid():
-    import pytest
-    from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         SavedSearchNotifications(unknown_channel={"enabled": True})
 
 
 def test_telegram_override_extra_forbid():
-    import pytest
-    from pydantic import ValidationError
-
     with pytest.raises(ValidationError):
         TelegramNotificationOverride(enabled=True, unknown_field="x")
 

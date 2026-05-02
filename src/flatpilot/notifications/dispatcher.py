@@ -64,8 +64,10 @@ def _parse_channels(raw: str | None) -> set[str]:
         return set()
 
 
-def _email_recipient() -> str | None:
-    return os.environ.get("EMAIL_TO") or os.environ.get("SMTP_FROM")
+def _email_recipient(smtp_env: str | None = None) -> str | None:
+    """``EMAIL_TO`` is a global override; otherwise resolve <prefix>_FROM."""
+    prefix = smtp_env if smtp_env is not None else "SMTP"
+    return os.environ.get("EMAIL_TO") or os.environ.get(f"{prefix}_FROM")
 
 
 def _subject_for(flat: dict[str, Any]) -> str:

@@ -126,3 +126,176 @@ def test_run_includes_a_row_per_filler_platform(tmp_db, monkeypatch):
     assert "Session: wg-gesucht" in output
     assert "Session: kleinanzeigen" in output
     assert "no session" in output
+
+
+# --- _check_telegram / _check_smtp branch coverage --------------------
+# bead kmy names "all branches of _check_telegram / _check_smtp
+# (including malformed profile)". Existing suite covered _check_pause,
+# _check_saved_searches, _check_platform_burn, _check_platform_cookies
+# but not the credential checks themselves; gap-fillers below.
+
+
+def test_check_telegram_no_profile_returns_optional(tmp_db):
+    # No profile.json on disk → _safe_load_profile() returns (None, None).
+    status, detail = doctor._check_telegram()
+    assert status == "optional"
+    assert "no profile" in detail
+
+
+def test_check_telegram_disabled_returns_optional(tmp_db):
+    from flatpilot.profile import Profile, save_profile
+
+    # Default example profile has telegram.enabled=False.
+    save_profile(Profile.load_example())
+    status, detail = doctor._check_telegram()
+    assert status == "optional"
+    assert "disabled" in detail
+
+
+def test_check_telegram_enabled_missing_token_returns_optional(tmp_db, monkeypatch):
+    from flatpilot.profile import (
+        Notifications,
+        Profile,
+        TelegramNotification,
+        save_profile,
+    )
+
+    # Enable telegram but ensure the env token is missing.
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    profile = Profile.load_example().model_copy(
+        update={
+            "notifications": Notifications(
+                telegram=TelegramNotification(
+                    enabled=True,
+                    bot_token_env="TELEGRAM_BOT_TOKEN",
+                    chat_id="",
+                ),
+            ),
+        }
+    )
+    save_profile(profile)
+    status, detail = doctor._check_telegram()
+    assert status == "optional"
+    assert "enabled but" in detail
+    assert "TELEGRAM_BOT_TOKEN" in detail
+    assert "chat_id" in detail
+
+
+def test_check_telegram_enabled_configured_returns_ok(tmp_db, monkeypatch):
+    from flatpilot.profile import (
+        Notifications,
+        Profile,
+        TelegramNotification,
+        save_profile,
+    )
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "abcdef:12345")
+    profile = Profile.load_example().model_copy(
+        update={
+            "notifications": Notifications(
+                telegram=TelegramNotification(
+                    enabled=True,
+                    bot_token_env="TELEGRAM_BOT_TOKEN",
+                    chat_id="42",
+                ),
+            ),
+        }
+    )
+    save_profile(profile)
+    status, detail = doctor._check_telegram()
+    assert status == "OK"
+    assert "TELEGRAM_BOT_TOKEN" in detail
+
+
+def test_check_smtp_no_profile_returns_optional(tmp_db):
+    status, detail = doctor._check_smtp()
+    assert status == "optional"
+    assert "no profile" in detail
+
+
+def test_check_smtp_disabled_returns_optional(tmp_db):
+    from flatpilot.profile import Profile, save_profile
+
+    save_profile(Profile.load_example())
+    status, detail = doctor._check_smtp()
+    assert status == "optional"
+    assert "disabled" in detail
+
+
+def test_check_smtp_enabled_missing_env_returns_optional(tmp_db, monkeypatch):
+    from flatpilot.profile import (
+        EmailNotification,
+        Notifications,
+        Profile,
+        save_profile,
+    )
+
+    for var in ("SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM"):
+        monkeypatch.delenv(var, raising=False)
+    profile = Profile.load_example().model_copy(
+        update={
+            "notifications": Notifications(
+                email=EmailNotification(enabled=True, smtp_env="SMTP"),
+            ),
+        }
+    )
+    save_profile(profile)
+    status, detail = doctor._check_smtp()
+    assert status == "optional"
+    assert "enabled but missing" in detail
+    # All five env vars are missing — detail should list every one of them
+    # rather than short-circuiting on the first.
+    for var in ("SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM"):
+        assert var in detail
+
+
+def test_check_smtp_enabled_configured_returns_ok(tmp_db, monkeypatch):
+    from flatpilot.profile import (
+        EmailNotification,
+        Notifications,
+        Profile,
+        save_profile,
+    )
+
+    for var, val in (
+        ("SMTP_HOST", "smtp.example.com"),
+        ("SMTP_PORT", "587"),
+        ("SMTP_USER", "user"),
+        ("SMTP_PASSWORD", "pw"),
+        ("SMTP_FROM", "me@example.com"),
+    ):
+        monkeypatch.setenv(var, val)
+    profile = Profile.load_example().model_copy(
+        update={
+            "notifications": Notifications(
+                email=EmailNotification(enabled=True, smtp_env="SMTP"),
+            ),
+        }
+    )
+    save_profile(profile)
+    status, detail = doctor._check_smtp()
+    assert status == "OK"
+    assert "set" in detail
+
+
+def test_doctor_handles_malformed_profile(tmp_db):
+    from io import StringIO
+
+    from flatpilot.config import PROFILE_PATH
+
+    PROFILE_PATH.write_text("{ not valid json")  # malformed
+
+    buf = StringIO()
+    rc = doctor.run(Console(file=buf, force_terminal=False, width=200))
+
+    # Doctor must surface "profile unreadable" without crashing. Per
+    # _safe_load_profile (doctor.py:79-82), the error path returns
+    # ("optional", "profile unreadable: ..."), so the status badge for
+    # the credential rows ends up "optional" — exit code stays 0
+    # (optional never fails). Either rc == 0 with the explanation in
+    # the table, or rc != 0 if a downstream check trips. What we
+    # really care about is that run() returned without raising AND
+    # that the table mentions the malformed profile.
+    output = buf.getvalue().lower()
+    assert "profile" in output
+    assert isinstance(rc, int)

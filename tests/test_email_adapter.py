@@ -86,3 +86,4 @@ def test_send_missing_prefixed_env_raises(monkeypatch):
     with pytest.raises(email_adapter.EmailError) as exc:
         email_adapter.send("to@x.com", "subj", "body", smtp_env="CUSTOM")
     assert "CUSTOM_HOST" in str(exc.value)
+    assert "CUSTOM_FROM" in str(exc.value)

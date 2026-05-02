@@ -3,7 +3,7 @@
 Credentials come from the environment using a configurable prefix.
 The default prefix is ``SMTP`` (so ``SMTP_HOST``, ``SMTP_PORT``,
 ``SMTP_USER``, ``SMTP_PASSWORD``, ``SMTP_FROM``). Saved-search-scoped
-overrides may pass a different prefix (e.g. ``ROOMMATE_SMTP``) to route
+overrides may pass a different prefix (e.g. ``ROOMMATE``) to route
 notifications through a separate SMTP account.
 
 Port 465 triggers ``SMTP_SSL``; any other port opens a plain connection

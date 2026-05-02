@@ -79,6 +79,7 @@ def _send(channel: str, flat: dict[str, Any], profile: Profile) -> None:
     if channel == "telegram":
         telegram_adapter.send(profile, template.render_html(flat), parse_mode="HTML")
     elif channel == "email":
+        # smtp_env threaded through in Task 6 once dispatcher resolves overrides per match.
         recipient = _email_recipient()
         if not recipient:
             raise email_adapter.EmailError("no recipient — set EMAIL_TO or SMTP_FROM")

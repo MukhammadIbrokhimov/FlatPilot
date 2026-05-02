@@ -101,6 +101,46 @@ class AutoApplySettings(BaseModel):
     )
 
 
+class TelegramNotificationOverride(BaseModel):
+    """Saved-search-scoped override of base profile's telegram channel.
+
+    Any transport field left as ``None`` falls through to the base profile's
+    value at dispatch time. ``enabled=False`` actively suppresses the channel
+    for matches against this saved search.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    bot_token_env: str | None = None
+    chat_id: str | None = None
+
+
+class EmailNotificationOverride(BaseModel):
+    """Saved-search-scoped override of base profile's email channel."""
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    smtp_env: str | None = None
+
+
+class SavedSearchNotifications(BaseModel):
+    """Per-saved-search notification routing override.
+
+    A non-None block on a saved search marks that search as a *definer* for
+    every channel it specifies. The dispatcher resolves channels per-match:
+    definers replace base for the channels they define; non-defining matched
+    searches contribute nothing.
+
+    NOTE: ``extra="forbid"`` will reject any future channel addition until
+    that channel field is explicitly added below. Typo protection beats
+    silent acceptance.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    telegram: TelegramNotificationOverride | None = None
+    email: EmailNotificationOverride | None = None
+
+
 class SavedSearch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -117,6 +157,7 @@ class SavedSearch(BaseModel):
     min_contract_months: int | None = Field(default=None, ge=0)
 
     platforms: list[str] = Field(default_factory=list)
+    notifications: SavedSearchNotifications | None = None
 
     @model_validator(mode="after")
     def _ranges_are_ordered(self) -> SavedSearch:

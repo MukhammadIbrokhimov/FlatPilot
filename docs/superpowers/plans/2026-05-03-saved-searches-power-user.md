@@ -825,7 +825,12 @@ def test_stale_name_in_matched_list_is_silent():
 
 
 def test_partial_override_inherits_base_for_unset_fields():
-    """chat_id=None falls through to base; bot_token_env override applies."""
+    """chat_id=None falls through to base; bot_token_env override applies.
+
+    Signature canonicalization (Section 4.3) excludes base-equal fields,
+    so the signature mentions only bot_token_env. transport_kwargs still
+    threads the resolved chat_id through to the adapter.
+    """
     s1 = SavedSearch(
         name="s1",
         notifications=SavedSearchNotifications(
@@ -836,9 +841,35 @@ def test_partial_override_inherits_base_for_unset_fields():
     )
     p = _profile(telegram=True, email=False, saved_searches=[s1])
     out = _resolve_channels_for_match(p, matched_names=["s1"])
-    sigs = [sig for _, sig, _ in out]
-    # Token differs from base, chat_id falls through → only token in signature.
-    assert any("bot=ALT_TOKEN" in sig and "chat=base_chat" in sig for sig in sigs), sigs
+    assert len(out) == 1
+    channel, signature, kwargs = out[0]
+    assert channel == "telegram"
+    assert signature == "telegram:bot=ALT_TOKEN"
+    # Resolved transport carries both fields so the adapter doesn't
+    # need to consult the profile for chat_id.
+    assert kwargs["bot_token_env"] == "ALT_TOKEN"
+    assert kwargs["chat_id"] == "base_chat"
+
+
+def test_all_none_override_plus_chat_override_both_fire():
+    """Spec §4.1 worked example B: definer X all-None enabled=True + definer Y chat=B
+    → both signatures fire (telegram:base AND telegram:chat=B)."""
+    x = SavedSearch(
+        name="x",
+        notifications=SavedSearchNotifications(
+            telegram=TelegramNotificationOverride(enabled=True),  # all transport None
+        ),
+    )
+    y = SavedSearch(
+        name="y",
+        notifications=SavedSearchNotifications(
+            telegram=TelegramNotificationOverride(enabled=True, chat_id="B"),
+        ),
+    )
+    p = _profile(telegram=True, email=False, saved_searches=[x, y])
+    out = _resolve_channels_for_match(p, matched_names=["x", "y"])
+    sigs = sorted(sig for _, sig, _ in out)
+    assert sigs == ["telegram:base", "telegram:chat=B"]
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1397,32 +1428,88 @@ Look at `send_test()` in `dispatcher.py` (~line 200). The existing call site is:
 
 This still works because `_send`'s new signature has `**transport_kwargs` defaulting to empty. No change needed; just verify the function signature wasn't broken by the rewrite.
 
-- [ ] **Step 5: Run all dispatcher tests**
+- [ ] **Step 5: Update the two existing dispatcher tests**
+
+The new dispatcher's early-out checks `profile.notifications.telegram.enabled` directly instead of calling `enabled_channels()`. Existing tests in `tests/test_notifications_dispatcher.py` rely on stubbing `enabled_channels` to fake a telegram-enabled state — that stub becomes a no-op under the new code. They must be rewritten to enable telegram on the profile itself. Apply these exact edits:
+
+In `tests/test_notifications_dispatcher.py`, replace the body of `test_dispatch_pending_skips_stale_hash_rows`:
+
+```python
+def test_dispatch_pending_skips_stale_hash_rows(tmp_db, monkeypatch):
+    base = Profile.load_example()
+    profile = base.model_copy(update={
+        "notifications": base.notifications.model_copy(update={
+            "telegram": base.notifications.telegram.model_copy(update={
+                "enabled": True, "chat_id": "test_chat",
+            })
+        })
+    })
+    current = profile_hash(profile)
+    stale = "deadbeef" * 4
+
+    flat_a = _seed_flat(tmp_db, external_id="a")
+    flat_b = _seed_flat(tmp_db, external_id="b")
+    _seed_match(tmp_db, flat_id=flat_a, profile_hash=current)
+    _seed_match(tmp_db, flat_id=flat_b, profile_hash=stale)
+
+    sends: list[tuple[str, int]] = []
+
+    def fake_send(channel, flat, profile, **kwargs):
+        sends.append((channel, flat["id"]))
+
+    monkeypatch.setattr(disp, "_send", fake_send)
+
+    disp.dispatch_pending(profile)
+    assert sends == [("telegram", flat_a)]
+```
+
+In the same file, replace the body of `test_mark_stale_flips_notified_at_without_send` similarly:
+
+```python
+def test_mark_stale_flips_notified_at_without_send(tmp_db, monkeypatch):
+    base = Profile.load_example()
+    profile = base.model_copy(update={
+        "notifications": base.notifications.model_copy(update={
+            "telegram": base.notifications.telegram.model_copy(update={
+                "enabled": True, "chat_id": "test_chat",
+            })
+        })
+    })
+    current = profile_hash(profile)
+    stale = "00" * 8
+
+    flat_a = _seed_flat(tmp_db, external_id="a")
+    flat_b = _seed_flat(tmp_db, external_id="b")
+    _seed_match(tmp_db, flat_id=flat_a, profile_hash=current)
+    _seed_match(tmp_db, flat_id=flat_b, profile_hash=stale)
+
+    sent: list[str] = []
+
+    def fake_send(channel, flat, profile, **kwargs):
+        sent.append(channel)
+
+    monkeypatch.setattr(disp, "_send", fake_send)
+
+    disp.dispatch_pending(profile)
+    # No real send invocation, but the stale row's notified_at should now be set.
+    row_b_notified = tmp_db.execute(
+        "SELECT notified_at FROM matches WHERE flat_id=?", (flat_b,),
+    ).fetchone()["notified_at"]
+    assert row_b_notified is not None
+    # Current-hash row's notified_at remains None because the no-op fake_send
+    # didn't add anything to ``notified``.
+    row_a_notified = tmp_db.execute(
+        "SELECT notified_at FROM matches WHERE flat_id=?", (flat_a,),
+    ).fetchone()["notified_at"]
+    assert row_a_notified is None
+```
+
+If the existing `test_mark_stale_flips_notified_at_without_send` body extends past what's shown above (it does in the current file — read it before editing), preserve any additional assertions but apply the same two changes: enable telegram on the profile, change `fake_send` to accept `**kwargs`, and remove any `monkeypatch.setattr(disp, "enabled_channels", ...)` line.
+
+Then run all dispatcher tests:
 
 Run: `pytest tests/test_notifications_dispatcher.py tests/test_dispatcher_signatures.py tests/test_dispatcher_resolve_channels.py -v`
 Expected: ALL PASS.
-
-The two existing tests in `test_notifications_dispatcher.py` (`test_dispatch_pending_skips_stale_hash_rows`, `test_mark_stale_flips_notified_at_without_send`) need their `monkeypatch.setattr(disp, "enabled_channels", lambda _p: ["telegram"])` and `fake_send` calls reviewed:
-- The early-out condition changed (now keys off `profile.notifications.telegram.enabled` directly, not `enabled_channels`). The existing tests use `Profile.load_example()` which has telegram disabled — they pass through the early-out today by stubbing `enabled_channels`. With the new condition, those tests need to actually enable telegram on the profile.
-- `fake_send` signatures: existing tests have `def fake_send(channel, flat, profile)` — the new dispatch passes `**transport_kwargs`, so update to `def fake_send(channel, flat, profile, **kwargs)`.
-
-Apply the fix:
-
-```python
-# In test_dispatch_pending_skips_stale_hash_rows and test_mark_stale_flips_notified_at_without_send:
-# Replace this line:
-#     monkeypatch.setattr(disp, "enabled_channels", lambda _p: ["telegram"])
-# With:
-#     profile = profile.model_copy(update={"notifications": profile.notifications.model_copy(
-#         update={"telegram": profile.notifications.telegram.model_copy(update={
-#             "enabled": True, "chat_id": "x",
-#         })}
-#     )})
-#     current = profile_hash(profile)  # re-hash after edit
-# And update fake_send signature: def fake_send(channel, flat, profile, **kwargs):
-```
-
-The first test asserts on `sends == [("telegram", flat_a)]` — adjust to match the new tuple shape, or change `fake_send` to record `(channel, flat["id"])` regardless of kwargs.
 
 - [ ] **Step 6: Run the full test suite**
 
@@ -1561,13 +1648,20 @@ def _check_saved_search_notifications() -> tuple[str, str]:
     return "OK", f"{override_count} override(s) resolve"
 ```
 
-Then register the row in the `_run` function (or whatever the doctor entry point is). Search for where `_check_saved_searches()` is invoked:
+Then register the new check in the `CHECKS` list at `doctor.py:229-237`. Append a new tuple immediately after the `("Auto-apply: saved searches", _check_saved_searches),` line so the list reads:
 
-```bash
-grep -n "_check_saved_searches" src/flatpilot/doctor.py
+```python
+CHECKS: list[tuple[str, CheckFn]] = [
+    ("Python >= 3.11", _check_python),
+    ("App directory", _check_app_dir),
+    ("Playwright Chromium", _check_playwright),
+    ("Telegram creds", _check_telegram),
+    ("SMTP creds", _check_smtp),
+    ("Auto-apply: PAUSE switch", _check_pause),
+    ("Auto-apply: saved searches", _check_saved_searches),
+    ("Auto-apply: saved-search notif overrides", _check_saved_search_notifications),
+]
 ```
-
-Add a sibling line for the new check, likely in a list of `(name, fn)` tuples. Match the existing pattern.
 
 - [ ] **Step 4: Add `import os` if not already at the top of `doctor.py`**
 
@@ -2374,6 +2468,40 @@ def test_delete_aborts_on_wrong_name(monkeypatch):
 
     result = _saved_searches_menu(out, profile)
     assert [ss.name for ss in result.saved_searches] == ["auto-default"]
+
+
+def test_delete_reprints_with_renumbered_indices(monkeypatch):
+    """After deleting row 1 of 3, the remaining searches reprint as 1, 2 (not 2, 3)."""
+    profile = Profile.load_example().model_copy(update={
+        "saved_searches": [
+            SavedSearch(name="alpha"),
+            SavedSearch(name="beta"),
+            SavedSearch(name="gamma"),
+        ],
+    })
+    out = _capture_console()
+
+    prompt_answers = iter(["delete", "1", "alpha", "done"])
+    monkeypatch.setattr(
+        "flatpilot.wizard.init.Prompt.ask",
+        lambda *a, **kw: next(prompt_answers),
+    )
+    monkeypatch.setattr(
+        "flatpilot.wizard.init.Confirm.ask",
+        lambda *a, **kw: True,
+    )
+
+    _saved_searches_menu(out, profile)
+    output = out.file.getvalue()
+
+    # The post-delete table should appear after the pre-delete table.
+    # Both contain "alpha"/"beta"/"gamma" rows in the pre-delete table; the
+    # post-delete table contains only "beta"/"gamma" with renumbered indices.
+    # We assert by counting: alpha must appear exactly once (pre-delete only).
+    assert output.count("alpha") == 1
+    # beta and gamma each appear in both tables (pre + post) → twice.
+    assert output.count("beta") == 2
+    assert output.count("gamma") == 2
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -2433,6 +2561,7 @@ Append to `tests/test_wizard_menu.py`:
 
 ```python
 def test_caps_walks_all_platforms(monkeypatch):
+    """Platforms iterate in alphabetical order: inberlinwohnen, kleinanzeigen, wg-gesucht."""
     profile = Profile.load_example()
     out = _capture_console()
 
@@ -2440,9 +2569,9 @@ def test_caps_walks_all_platforms(monkeypatch):
     # We change wg-gesucht's cap to 50 and cooldown to 90; keep others as default.
     prompt_answers = iter([
         "caps",
-        "50", "90",   # wg-gesucht cap, cooldown (changed)
+        "", "",       # inberlinwohnen blank → keep current (alphabetically first)
         "", "",       # kleinanzeigen blank → keep current
-        "", "",       # inberlinwohnen blank → keep current
+        "50", "90",   # wg-gesucht cap=50, cooldown=90
         "done",
     ])
     monkeypatch.setattr(
@@ -2459,6 +2588,8 @@ def test_caps_walks_all_platforms(monkeypatch):
     assert result.auto_apply.cooldown_seconds_per_platform["wg-gesucht"] == 90
     assert result.auto_apply.daily_cap_per_platform["kleinanzeigen"] == 20
     assert result.auto_apply.cooldown_seconds_per_platform["kleinanzeigen"] == 120
+    assert result.auto_apply.daily_cap_per_platform["inberlinwohnen"] == 20
+    assert result.auto_apply.cooldown_seconds_per_platform["inberlinwohnen"] == 120
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -2477,16 +2608,21 @@ def _edit_caps_and_cooldowns(out: Console, profile: Profile) -> Profile:
     new_cooldowns = dict(profile.auto_apply.cooldown_seconds_per_platform)
     for platform in sorted(profile.auto_apply.daily_cap_per_platform.keys()):
         out.print(f"[bold]Platform: {platform}[/bold]")
-        cap_default = str(new_caps.get(platform, 20))
-        cap = _prompt_optional_int(out, f"  Daily cap (current {cap_default})", default=cap_default, min_value=0)
-        new_caps[platform] = cap if cap is not None else int(cap_default)
-
-        cooldown_default = str(new_cooldowns.get(platform, 120))
-        cooldown = _prompt_optional_int(
-            out, f"  Cooldown seconds (current {cooldown_default})",
-            default=cooldown_default, min_value=0,
+        cap_current = new_caps.get(platform, 20)
+        cap = _prompt_optional_int(
+            out, f"  Daily cap (current {cap_current})",
+            default=str(cap_current), min_value=0,
         )
-        new_cooldowns[platform] = cooldown if cooldown is not None else int(cooldown_default)
+        if cap is not None:
+            new_caps[platform] = cap
+
+        cooldown_current = new_cooldowns.get(platform, 120)
+        cooldown = _prompt_optional_int(
+            out, f"  Cooldown seconds (current {cooldown_current})",
+            default=str(cooldown_current), min_value=0,
+        )
+        if cooldown is not None:
+            new_cooldowns[platform] = cooldown
 
     return profile.model_copy(update={
         "auto_apply": profile.auto_apply.model_copy(update={
@@ -2578,17 +2714,19 @@ git commit -m "FlatPilot-d36: replace legacy auto-apply Y/N with saved-searches 
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Find the right section**
+- [ ] **Step 1: Find the anchor**
 
 Run: `grep -n "flatpilot init\|flatpilot run\|flatpilot notify" README.md`
 
-Locate the section discussing the wizard or notification dispatch.
+Pick the line that mentions both `flatpilot init` and `flatpilot run` (typically a Quick Start or Usage section). If no such line exists, append the note as a new subsection at the end of the Usage section, immediately before the next `##` heading.
 
-- [ ] **Step 2: Add a one-line note**
+- [ ] **Step 2: Add the note as a new paragraph**
 
-Insert near the existing `flatpilot init` / `flatpilot notify` documentation:
+Insert this paragraph right after the chosen anchor line, with a blank line before and after for markdown spacing:
 
-> **After editing saved searches:** run `flatpilot run` (which re-matches before notifying), not `flatpilot notify` standalone. Profile edits rotate the internal hash that scopes pending matches; running `flatpilot notify` directly after an edit will silently drop queued notifications. `flatpilot run` re-creates the match rows under the new hash automatically.
+```markdown
+**After editing saved searches:** run `flatpilot run` (which re-matches before notifying), not `flatpilot notify` standalone. Profile edits rotate the internal hash that scopes pending matches; running `flatpilot notify` directly after an edit will silently drop queued notifications. `flatpilot run` re-creates the match rows under the new hash automatically.
+```
 
 - [ ] **Step 3: Commit**
 

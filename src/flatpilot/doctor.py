@@ -142,6 +142,41 @@ def _check_saved_searches() -> tuple[str, str]:
     return "OK", f"{len(active)} active ({', '.join(active)})"
 
 
+def _check_saved_search_notifications() -> tuple[str, str]:
+    """Verify per-saved-search notification overrides reference resolvable env vars."""
+    profile, err = _safe_load_profile()
+    if err is not None:
+        return "optional", err
+    if profile is None:
+        return "optional", "no profile"
+
+    missing_env: list[str] = []
+    override_count = 0
+    for ss in profile.saved_searches:
+        if ss.notifications is None:
+            continue
+        if ss.notifications.telegram is not None and ss.notifications.telegram.enabled:
+            override_count += 1
+            env_name = ss.notifications.telegram.bot_token_env
+            if env_name and not os.environ.get(env_name):
+                missing_env.append(f"{ss.name}.telegram.bot_token_env={env_name}")
+        if ss.notifications.email is not None and ss.notifications.email.enabled:
+            override_count += 1
+            prefix = ss.notifications.email.smtp_env
+            if prefix:
+                # Only flag if the entire prefix's HOST is missing — caller
+                # has the option to fall through to base for individual fields.
+                host_var = f"{prefix}_HOST"
+                if not os.environ.get(host_var):
+                    missing_env.append(f"{ss.name}.email.smtp_env={prefix} ({host_var} unset)")
+
+    if not override_count:
+        return "OK", "no overrides"
+    if missing_env:
+        return "optional", f"missing env vars: {', '.join(missing_env)}"
+    return "OK", f"{override_count} override(s) resolve"
+
+
 def _check_platform_burn(platform: str) -> tuple[str, str]:
     from flatpilot.auto_apply import cooldown_remaining_sec, daily_cap_remaining
     from flatpilot.database import get_conn, init_db
@@ -234,6 +269,7 @@ CHECKS: list[tuple[str, CheckFn]] = [
     ("SMTP creds", _check_smtp),
     ("Auto-apply: PAUSE switch", _check_pause),
     ("Auto-apply: saved searches", _check_saved_searches),
+    ("Auto-apply: saved-search notif overrides", _check_saved_search_notifications),
 ]
 
 

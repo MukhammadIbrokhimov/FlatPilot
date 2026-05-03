@@ -40,6 +40,119 @@ _SYNTHETIC_FLAT: dict[str, Any] = {
 }
 
 
+# Per-match channel resolution under semantic A″ (per-channel replace).
+# See docs/superpowers/specs/2026-05-02-saved-searches-power-user-design.md §4.
+#
+# Output tuple shape: (channel, signature, transport_kwargs).
+# - channel: "telegram" or "email"
+# - signature: canonicalized string used as the dedup key in
+#   notified_channels_json. Always "<channel>:base" when the resolved
+#   transport equals base profile's transport for every field.
+# - transport_kwargs: dict passed to the adapter's send(); keys are
+#   override fields that differ from base. Empty dict when signature is
+#   "<channel>:base" — signals "no override needed."
+
+_TELEGRAM_FIELDS = ("bot_token_env", "chat_id")
+_EMAIL_FIELDS = ("smtp_env",)
+
+
+def _resolve_channel(
+    *,
+    channel: str,
+    fields: tuple[str, ...],
+    base_cfg: Any,
+    overrides: list[Any],
+) -> list[tuple[str, str, dict[str, str]]]:
+    """Resolve one channel for one match row. Pure function.
+
+    ``base_cfg`` is the corresponding ``profile.notifications.<channel>``
+    block (e.g. ``profile.notifications.telegram``). ``overrides`` is the
+    ordered list of non-None per-search override blocks for this channel
+    (from definers in the matched-search list).
+
+    Returns 0+ (channel, signature, transport_kwargs) tuples, deduped by
+    canonicalized signature.
+    """
+    if not overrides:
+        # No definers for this channel → base fires if enabled.
+        if base_cfg.enabled:
+            return [(channel, f"{channel}:base", {})]
+        return []
+
+    # Definers replace base. Filter to enabled=True overrides.
+    enabled_overrides = [o for o in overrides if o.enabled]
+    if not enabled_overrides:
+        # All definers actively suppressed the channel.
+        return []
+
+    seen: dict[str, tuple[str, str, dict[str, str]]] = {}
+    for override in enabled_overrides:
+        kwargs: dict[str, str] = {}
+        differs_from_base = False
+        for field in fields:
+            override_value = getattr(override, field)
+            base_value = getattr(base_cfg, field)
+            resolved = override_value if override_value is not None else base_value
+            kwargs[field] = resolved
+            if resolved != base_value:
+                differs_from_base = True
+
+        if not differs_from_base:
+            signature = f"{channel}:base"
+            transport_kwargs: dict[str, str] = {}
+        else:
+            signature = f"{channel}:" + ",".join(
+                f"{field.split('_')[0]}={kwargs[field]}"
+                for field in fields
+                if kwargs[field] != getattr(base_cfg, field)
+            )
+            # transport_kwargs threads through ALL resolved values so the
+            # adapter doesn't have to consult the profile for the fields
+            # the dispatcher already resolved.
+            transport_kwargs = dict(kwargs)
+
+        seen[signature] = (channel, signature, transport_kwargs)
+
+    return list(seen.values())
+
+
+def _resolve_channels_for_match(
+    profile: Profile,
+    matched_names: list[str],
+) -> list[tuple[str, str, dict[str, str]]]:
+    """Top-level per-match resolver. See module-level docstring."""
+    saved_by_name = {ss.name: ss for ss in profile.saved_searches}
+
+    telegram_overrides = []
+    email_overrides = []
+    for name in matched_names:
+        ss = saved_by_name.get(name)
+        if ss is None:
+            logger.debug("dispatch: matched-search name %r not in profile (stale row)", name)
+            continue
+        if ss.notifications is None:
+            continue
+        if ss.notifications.telegram is not None:
+            telegram_overrides.append(ss.notifications.telegram)
+        if ss.notifications.email is not None:
+            email_overrides.append(ss.notifications.email)
+
+    out: list[tuple[str, str, dict[str, str]]] = []
+    out.extend(_resolve_channel(
+        channel="telegram",
+        fields=_TELEGRAM_FIELDS,
+        base_cfg=profile.notifications.telegram,
+        overrides=telegram_overrides,
+    ))
+    out.extend(_resolve_channel(
+        channel="email",
+        fields=_EMAIL_FIELDS,
+        base_cfg=profile.notifications.email,
+        overrides=email_overrides,
+    ))
+    return out
+
+
 class DispatchSummary(TypedDict):
     processed: int
     sent: dict[str, int]

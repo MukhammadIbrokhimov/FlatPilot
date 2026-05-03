@@ -26,6 +26,7 @@ from flatpilot.notifications import email as email_adapter
 from flatpilot.notifications import telegram as telegram_adapter
 from flatpilot.notifications import template
 from flatpilot.profile import Profile, profile_hash
+from flatpilot.users import DEFAULT_USER_ID
 
 logger = logging.getLogger(__name__)
 
@@ -249,7 +250,11 @@ def _send(
         raise ValueError(f"unknown channel: {channel!r}")
 
 
-def _mark_stale_matches_notified(conn: sqlite3.Connection, current_hash: str) -> None:
+def _mark_stale_matches_notified(
+    conn: sqlite3.Connection,
+    current_hash: str,
+    user_id: int = DEFAULT_USER_ID,
+) -> None:
     """Suppress pending matches whose profile hash is no longer current.
 
     Stamps notified_at (without touching notified_channels_json) so these
@@ -265,8 +270,9 @@ def _mark_stale_matches_notified(conn: sqlite3.Connection, current_hash: str) ->
          WHERE decision = 'match'
            AND notified_at IS NULL
            AND profile_version_hash != ?
+           AND user_id = ?
         """,
-        (now, current_hash),
+        (now, current_hash, user_id),
     )
     if cursor.rowcount:
         logger.info(
@@ -275,7 +281,10 @@ def _mark_stale_matches_notified(conn: sqlite3.Connection, current_hash: str) ->
         )
 
 
-def dispatch_pending(profile: Profile) -> DispatchSummary:
+def dispatch_pending(
+    profile: Profile,
+    user_id: int = DEFAULT_USER_ID,
+) -> DispatchSummary:
     # Early-out only if NEITHER base nor any saved search could ever fire.
     base_has_channel = (
         profile.notifications.telegram.enabled or profile.notifications.email.enabled
@@ -295,7 +304,7 @@ def dispatch_pending(profile: Profile) -> DispatchSummary:
     # a profile change (e.g. lowering rent_max_warm) would still notify
     # matches that were valid under the previous profile's rules but
     # never got a notified_at stamp. See FlatPilot-usm for the scenario.
-    _mark_stale_matches_notified(conn, phash)
+    _mark_stale_matches_notified(conn, phash, user_id)
 
     rows = conn.execute(
         """
@@ -306,10 +315,12 @@ def dispatch_pending(profile: Profile) -> DispatchSummary:
                f.*
         FROM matches m
         JOIN flats f ON f.id = m.flat_id
-        WHERE m.decision = 'match' AND m.profile_version_hash = ?
+        WHERE m.decision = 'match'
+          AND m.profile_version_hash = ?
+          AND m.user_id = ?
         ORDER BY canonical_id, f.id
         """,
-        (phash,),
+        (phash, user_id),
     ).fetchall()
 
     # Dedup across sibling match rows that reference the same canonical
@@ -363,8 +374,9 @@ def dispatch_pending(profile: Profile) -> DispatchSummary:
         if notified:
             now = datetime.now(UTC).isoformat()
             conn.execute(
-                "UPDATE matches SET notified_channels_json = ?, notified_at = ? WHERE id = ?",
-                (json.dumps(sorted(notified)), now, match_id),
+                "UPDATE matches SET notified_channels_json = ?, notified_at = ? "
+                "WHERE id = ? AND user_id = ?",
+                (json.dumps(sorted(notified)), now, match_id, user_id),
             )
 
     logger.info(

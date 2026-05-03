@@ -23,6 +23,7 @@ from flatpilot.database import get_conn, init_db
 from flatpilot.errors import ProfileMissingError
 from flatpilot.matcher.filters import evaluate
 from flatpilot.profile import load_profile, profile_hash
+from flatpilot.users import DEFAULT_USER_ID
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ class MatchSummary(TypedDict):
     profile_hash: str
 
 
-def run_match() -> MatchSummary:
+def run_match(user_id: int = DEFAULT_USER_ID) -> MatchSummary:
     profile = load_profile()
     if profile is None:
         raise ProfileMissingError(
@@ -55,11 +56,13 @@ def run_match() -> MatchSummary:
         SELECT f.*
         FROM flats f
         LEFT JOIN matches m
-            ON m.flat_id = f.id AND m.profile_version_hash = ?
+            ON m.flat_id = f.id
+            AND m.profile_version_hash = ?
+            AND m.user_id = ?
         WHERE m.id IS NULL
           AND f.canonical_flat_id IS NULL
         """,
-        (phash,),
+        (phash, user_id),
     ).fetchall()
 
     from flatpilot.auto_apply import overlay_profile
@@ -79,11 +82,12 @@ def run_match() -> MatchSummary:
         conn.execute(
             """
             INSERT OR IGNORE INTO matches
-                (flat_id, profile_version_hash, decision, decision_reasons_json,
-                 decided_at, matched_saved_searches_json)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (user_id, flat_id, profile_version_hash, decision,
+                 decision_reasons_json, decided_at, matched_saved_searches_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                user_id,
                 flat["id"],
                 phash,
                 decision,

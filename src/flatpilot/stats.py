@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TypedDict
 
 from flatpilot.database import get_conn
+from flatpilot.users import DEFAULT_USER_ID
 
 
 class Stats(TypedDict):
@@ -23,7 +24,7 @@ class Stats(TypedDict):
     notifications_by_channel: dict[str, int]
 
 
-def get_stats() -> Stats:
+def get_stats(user_id: int = DEFAULT_USER_ID) -> Stats:
     conn = get_conn()
 
     total_flats = conn.execute("SELECT COUNT(*) FROM flats").fetchone()[0]
@@ -35,18 +36,21 @@ def get_stats() -> Stats:
     ).fetchone()[0]
 
     matched = conn.execute(
-        "SELECT COUNT(*) FROM matches WHERE decision = 'match'"
+        "SELECT COUNT(*) FROM matches WHERE decision = 'match' AND user_id = ?",
+        (user_id,),
     ).fetchone()[0]
 
     notified = conn.execute(
-        "SELECT COUNT(*) FROM matches WHERE notified_at IS NOT NULL"
+        "SELECT COUNT(*) FROM matches WHERE notified_at IS NOT NULL AND user_id = ?",
+        (user_id,),
     ).fetchone()[0]
 
     last_scrape_at = conn.execute("SELECT MAX(scraped_at) FROM flats").fetchone()[0]
 
     rejected_by_reason: dict[str, int] = {}
     for (reasons_json,) in conn.execute(
-        "SELECT decision_reasons_json FROM matches WHERE decision = 'reject'"
+        "SELECT decision_reasons_json FROM matches WHERE decision = 'reject' AND user_id = ?",
+        (user_id,),
     ):
         try:
             reasons = json.loads(reasons_json)
@@ -58,7 +62,10 @@ def get_stats() -> Stats:
     notifications_by_channel: dict[str, int] = {}
     for (channels_json,) in conn.execute(
         "SELECT notified_channels_json FROM matches "
-        "WHERE notified_at IS NOT NULL AND notified_channels_json IS NOT NULL"
+        "WHERE notified_at IS NOT NULL "
+        "AND notified_channels_json IS NOT NULL "
+        "AND user_id = ?",
+        (user_id,),
     ):
         try:
             channels = json.loads(channels_json)

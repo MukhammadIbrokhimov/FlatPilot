@@ -122,6 +122,17 @@ def _check_smtp() -> tuple[str, str]:
     return "OK", "HOST/PORT/USER/PASSWORD/FROM set"
 
 
+def _check_users() -> tuple[str, str]:
+    from flatpilot.database import get_conn, init_db
+
+    init_db()
+    conn = get_conn()
+    (count,) = conn.execute("SELECT COUNT(*) FROM users").fetchone()
+    if count == 0:
+        return "MISSING", "0 users — run `flatpilot init`"
+    return "OK", f"{count} row{'s' if count != 1 else ''}"
+
+
 def _check_pause() -> tuple[str, str]:
     from flatpilot.auto_apply import PAUSE_PATH
 
@@ -268,6 +279,7 @@ CHECKS: list[tuple[str, CheckFn]] = [
     ("Python >= 3.11", _check_python),
     ("App directory", _check_app_dir),
     ("Playwright Chromium", _check_playwright),
+    ("Users", _check_users),
     ("Telegram creds", _check_telegram),
     ("SMTP creds", _check_smtp),
     ("Auto-apply: PAUSE switch", _check_pause),

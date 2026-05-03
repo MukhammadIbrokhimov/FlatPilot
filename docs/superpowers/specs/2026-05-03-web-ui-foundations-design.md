@@ -23,8 +23,9 @@ These ship in one PR because the ADR's decisions directly drive the schema shape
 
 - `docs/adr/0001-web-ui-architecture.md` capturing the forward-looking decisions for Phase 5.
 - `users` table with one seed row (`id = 1`).
-- `user_id` column on `matches` and `applications` (added via the existing `COLUMNS` ALTER-TABLE migration).
-- `apply_locks` table rebuild to change the primary key from `flat_id` to `(flat_id, user_id)`.
+- `user_id` column added to `matches`, `applications`, and `apply_locks` via a one-shot table-rebuild migration (SQLite cannot ALTER-add a `REFERENCES` column with a non-NULL default; see §4.3 for the full rationale).
+- `matches.UNIQUE` constraint widened from `(flat_id, profile_version_hash, decision)` to `(user_id, flat_id, profile_version_hash, decision)` as part of the same rebuild.
+- `apply_locks` PRIMARY KEY widened from `flat_id` to `(flat_id, user_id)` as part of the same rebuild.
 - `DEFAULT_USER_ID = 1` constant exported from a new `flatpilot.users` module.
 - All existing SQL queries updated to scope by `user_id`.
 - Composite indexes on `(user_id, decided_at)` and `(user_id, applied_at)`.
@@ -60,9 +61,14 @@ A hosted multi-user Web UI is on the roadmap (epic FlatPilot-0wfb). Without an a
 
 - **Backend: FastAPI.** Async, integrates with the existing `flatpilot` package as a Python module, plays well with Pydantic models already used in `profile.py` and `schemas.py`.
 - **Frontend: Next.js (App Router, TypeScript).** SSR for the dashboard, file-system routing, deployed as its own container.
-- **Auth: email magic-link.** 15-minute single-use tokens, signed-cookie sessions via `itsdangerous`. No passwords. Reuses the existing SMTP transport from `notifications/email.py` to send link emails.
+- **Auth: email magic-link.** 15-minute single-use tokens, signed-cookie sessions via `itsdangerous`. No passwords. Reuses the existing SMTP transport from `notifications/email.py` to send link emails initially. If hosted launch shows that SMTP through a hobbyist relay can't deliver the link within ~5–10 s end-to-end (the latency budget magic-link UX requires), the auth PR swaps in a transactional API like Postmark or Resend without changing the rest of the auth design.
 - **Database: SQLite now → Postgres at hosted launch.** The Phase 5 server PR adopts SQLAlchemy + Alembic; pre-launch migration is a one-shot `pgloader` run. SQLAlchemy adoption is deliberately deferred — bundling it with this PR would mix a schema migration and an ORM rewrite in the same diff.
-- **Deployment: docker-compose.** Five services — `web` (FastAPI), `worker` (scrapers + matcher + notifier on cron), `frontend` (Next.js), `postgres`, `caddy` (TLS reverse proxy). Worker is deliberately separate from web so a long Playwright run can't block API requests.
+- **Deployment: docker-compose**, five services:
+    - `web` — FastAPI process serving the API.
+    - `worker` — scrapers, matcher, and notifier on a cron loop. Deliberately separate from `web` so a long Playwright run can't block API requests.
+    - `frontend` — Next.js.
+    - `postgres` — primary store post-cutover.
+    - `caddy` — TLS reverse proxy in front of `web` and `frontend`.
 - **Per-user filesystem namespace (Phase 5):** `~/.flatpilot/users/<id>/{profile.json, sessions/, templates/, attachments/}`. The geocode cache (`~/.flatpilot/geocode_cache.json`) stays shared across users since geocoding addresses is platform-shared work.
 
 ### 3.4 Consequences
@@ -107,22 +113,90 @@ VALUES (1, NULL, ?)
 
 with the current UTC timestamp. Idempotent on every startup.
 
-### 4.3 `user_id` columns
+### 4.3 Why every user-scoped table needs a rebuild, not an ALTER
 
-Added via the existing `COLUMNS` ALTER-TABLE migration mechanism in `database.py`:
+The natural plan would be `ALTER TABLE matches ADD COLUMN user_id ... REFERENCES users(id) NOT NULL DEFAULT 1`, but SQLite forbids this: `ALTER TABLE ADD COLUMN` rejects any `REFERENCES` column with a non-NULL default (hard rule, not version-dependent). On top of that, `matches` carries `UNIQUE (flat_id, profile_version_hash, decision)` which must widen to include `user_id` — otherwise two users sharing a `profile_version_hash` (the default-profile case after `flatpilot init`) would silently lose match rows to `INSERT OR IGNORE` in `matcher/runner.py`. SQLite cannot ALTER a UNIQUE constraint either.
 
-| Table | New column |
-|---|---|
-| `matches` | `user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id)` |
-| `applications` | `user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id)` |
+Both forces resolve the same way: **rebuild `matches`, `applications`, and `apply_locks` via the standard CREATE-COPY-DROP-RENAME pattern.** The rebuild is the one place SQLite *does* allow a `NOT NULL DEFAULT 1 REFERENCES users(id)` column, and it's also the only way to widen a UNIQUE/PRIMARY-KEY constraint. The cost is one transaction's worth of I/O on each user-scoped table, paid once per install on the first post-upgrade `init_db`.
 
-The `DEFAULT 1` makes SQLite backfill every existing row to the seed user during the ALTER TABLE.
+### 4.4 Rebuild SQL for each user-scoped table
 
-### 4.4 `apply_locks` rebuild
+All three rebuilds live in a single helper `_rebuild_user_scoped_tables(conn)` in `database.py`, executed inside one `BEGIN IMMEDIATE … COMMIT` transaction. Each rebuild starts with a `DROP TABLE IF EXISTS <name>_new` to recover from a half-finished previous attempt (crash between `DROP` and `RENAME` outside the transaction). The helper is gated on a per-table column probe: if `PRAGMA table_info(<name>)` already lists a `user_id` column, that table's rebuild block is skipped.
 
-`ALTER TABLE` cannot change a primary key in SQLite; the table must be recreated. The migration helper runs the following sequence inside one transaction, idempotent on already-rebuilt schemas:
+**`matches`** — adds `user_id`, widens UNIQUE to include it:
 
 ```sql
+DROP TABLE IF EXISTS matches_new;
+CREATE TABLE matches_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id),
+    flat_id INTEGER NOT NULL REFERENCES flats(id) ON DELETE CASCADE,
+    profile_version_hash TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK (decision IN ('match', 'reject', 'skipped')),
+    decision_reasons_json TEXT NOT NULL DEFAULT '[]',
+    decided_at TEXT NOT NULL,
+    notified_at TEXT,
+    notified_channels_json TEXT,
+    matched_saved_searches_json TEXT NOT NULL DEFAULT '[]',
+    UNIQUE (user_id, flat_id, profile_version_hash, decision)
+);
+INSERT INTO matches_new (
+    id, user_id, flat_id, profile_version_hash, decision, decision_reasons_json,
+    decided_at, notified_at, notified_channels_json, matched_saved_searches_json
+)
+SELECT
+    id, 1, flat_id, profile_version_hash, decision, decision_reasons_json,
+    decided_at, notified_at, notified_channels_json, matched_saved_searches_json
+FROM matches;
+DROP TABLE matches;
+ALTER TABLE matches_new RENAME TO matches;
+```
+
+**`applications`** — adds `user_id`, no UNIQUE constraint to widen:
+
+```sql
+DROP TABLE IF EXISTS applications_new;
+CREATE TABLE applications_new (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id),
+    flat_id INTEGER NOT NULL REFERENCES flats(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+    listing_url TEXT NOT NULL,
+    title TEXT NOT NULL,
+    rent_warm_eur REAL,
+    rooms REAL,
+    size_sqm REAL,
+    district TEXT,
+    applied_at TEXT NOT NULL,
+    method TEXT NOT NULL CHECK (method IN ('manual', 'auto')),
+    message_sent TEXT,
+    attachments_sent_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL CHECK (
+        status IN ('submitted', 'failed', 'viewing_invited', 'rejected', 'no_response')
+    ),
+    response_received_at TEXT,
+    response_text TEXT,
+    notes TEXT,
+    triggered_by_saved_search TEXT
+);
+INSERT INTO applications_new (
+    id, user_id, flat_id, platform, listing_url, title, rent_warm_eur, rooms,
+    size_sqm, district, applied_at, method, message_sent, attachments_sent_json,
+    status, response_received_at, response_text, notes, triggered_by_saved_search
+)
+SELECT
+    id, 1, flat_id, platform, listing_url, title, rent_warm_eur, rooms,
+    size_sqm, district, applied_at, method, message_sent, attachments_sent_json,
+    status, response_received_at, response_text, notes, triggered_by_saved_search
+FROM applications;
+DROP TABLE applications;
+ALTER TABLE applications_new RENAME TO applications;
+```
+
+**`apply_locks`** — adds `user_id`, widens PRIMARY KEY:
+
+```sql
+DROP TABLE IF EXISTS apply_locks_new;
 CREATE TABLE apply_locks_new (
     flat_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id),
@@ -136,7 +210,7 @@ DROP TABLE apply_locks;
 ALTER TABLE apply_locks_new RENAME TO apply_locks;
 ```
 
-Idempotency check: if `PRAGMA table_info(apply_locks)` already lists a `user_id` column, the helper is a no-op.
+The denormalised columns and CHECK constraints are preserved verbatim from `schemas.py`. The post-rebuild `SCHEMAS` registrations in `schemas.py` must match exactly so `init_db()` on a fresh DB produces the same shape.
 
 ### 4.5 `flats` and saved searches — unchanged
 
@@ -168,30 +242,34 @@ def ensure_default_user(conn) -> None:
 
 `init_db()` ordering:
 
-1. `CREATE TABLE` for every entry in `SCHEMAS` (this picks up the new `users` table).
-2. `ensure_default_user(conn)` — must run before the FK-using ALTER TABLEs.
-3. `ensure_columns()` — adds `user_id` columns to `matches` / `applications`.
-4. `_rebuild_apply_locks_for_user_scope(conn)` — the table-rebuild migration.
+1. `CREATE TABLE` for every entry in `SCHEMAS`. This picks up the new `users` table and registers the post-rebuild shapes of `matches` / `applications` / `apply_locks` for fresh installs (which never enter the rebuild path because the `user_id` column is already present).
+2. `ensure_default_user(conn)` — inserts seed user `(id=1, email=NULL, created_at=now)`. Must run before any rebuild that copies into a table with `REFERENCES users(id)`, otherwise the per-row FK check fails on the `INSERT INTO ..._new SELECT 1, ...` step.
+3. `_rebuild_user_scoped_tables(conn)` — the per-table rebuild helper described in §4.4. Wraps the three rebuilds in one `BEGIN IMMEDIATE` transaction; each rebuild block is gated on a `PRAGMA table_info` probe so already-migrated tables are skipped.
+4. `ensure_columns()` — runs after the rebuilds so any future ALTER-able columns layer on top of the new shape.
+5. The two new composite indexes from §4.6 are registered in `SCHEMAS` and created by step 1.
 
 ### 5.3 `schemas.py`
 
 - Register `users` table in `SCHEMAS`.
-- Add `matches.user_id` and `applications.user_id` to `COLUMNS`.
-- Register the two new indexes in `SCHEMAS`.
-- The `apply_locks` rebuild lives in `database.py`, not `schemas.py`, because it's a one-shot helper rather than a declarative schema entry.
+- Update the `matches`, `applications`, and `apply_locks` `CREATE TABLE` strings in `SCHEMAS` to the **post-rebuild** shapes (with `user_id` and the widened UNIQUE / PRIMARY KEY). Fresh installs go straight to the new shape; existing installs hit the rebuild path in `database.py`.
+- Register the two new indexes (`idx_matches_user_decided`, `idx_applications_user_applied`) in `SCHEMAS`.
+- Drop the obsolete `COLUMNS["matches"] = {"matched_saved_searches_json": ...}` and `COLUMNS["applications"] = {"triggered_by_saved_search": ...}` entries — those columns are now declared inline in the rebuilt `CREATE TABLE` strings, so the ALTER-TABLE forward migration is no longer needed for them.
+- The rebuild helper itself lives in `database.py`, not `schemas.py`, because it's a one-shot procedural migration rather than a declarative schema entry.
 
 ### 5.4 Query updates
 
-Every `INSERT` into `matches` / `applications` / `apply_locks` adds `user_id`. Every `SELECT` / `UPDATE` / `DELETE` that operates on user-scoped data filters by `user_id = ?`, parameter-bound, never string-formatted.
+Every `INSERT` into `matches` / `applications` / `apply_locks` adds `user_id`. Every `SELECT` / `UPDATE` / `DELETE` that operates on user-scoped data filters by `user_id = ?`, parameter-bound, never string-formatted. The check that nothing was missed is mechanical: `grep -rn "FROM matches\|UPDATE matches\|INTO matches\|FROM applications\|UPDATE applications\|INTO applications\|FROM apply_locks\|UPDATE apply_locks\|INTO apply_locks\|DELETE FROM apply_locks" src/flatpilot/` and confirm every hit either filters/inserts a `user_id` or is in code that legitimately operates across users (none exist in this PR's scope).
 
-| File | Lines/queries to update |
+| File | Specific queries to update |
 |---|---|
-| `applications.py` | every INSERT / SELECT / UPDATE on `applications` |
-| `apply.py` | lock acquire INSERT, stale-lock reaper SELECT/DELETE |
-| `matcher/runner.py` | match-row INSERT and existing-match dedup SELECT |
-| `view.py` | dashboard SELECTs against `matches` / `applications` |
+| `applications.py` | line 27 (`SELECT flat_id FROM matches WHERE id = ?` — gate by user_id so a guessed match id can't side-step scoping); line 62 (`SELECT id FROM applications WHERE id = ?` — same); every `INSERT` into `applications` |
+| `apply.py` | line 159 (stale-lock reaper `DELETE FROM apply_locks WHERE flat_id = ? AND acquired_at < ?` — must scope by `user_id` so user 1's reap doesn't touch user 2's lock); line 169 (`SELECT pid, acquired_at FROM apply_locks WHERE flat_id = ?`); line 192 (lock release `DELETE FROM apply_locks WHERE flat_id = ?`); line 263 (already-applied guard `SELECT id FROM applications WHERE flat_id = ? AND status = 'submitted'` — must scope, otherwise user 1 sees user 2's submission and refuses, defeating per-user lock isolation); the lock-acquire INSERT |
+| `matcher/runner.py` | match-row INSERT (must include `user_id`) and the existing-match dedup SELECT |
+| `view.py` | every dashboard SELECT against `matches` / `applications` |
 | `server.py` | localhost dashboard SELECTs / UPDATEs |
 | `auto_apply.py` | per-platform cap-counting SELECT |
+| `stats.py` | lines 38, 42, 49, 60 — counter SELECTs against `matches` (otherwise `flatpilot status` aggregates across users) |
+| `notifications/dispatcher.py` | line 263 (`UPDATE matches` in `_mark_stale_matches_notified`); line 307 (`SELECT … FROM matches m JOIN flats` for pending notifications); line 366 (`UPDATE matches SET notified_channels_json = ?, notified_at = ? WHERE id = ?` — needs to gate by user_id even though the match id is unique, to defend against id leakage in tests/bugs) |
 | `pipeline.py` | passes `DEFAULT_USER_ID` to callees that need it |
 
 `cli.py` does not change. Every entry point implicitly operates on the seed user via `DEFAULT_USER_ID`.
@@ -213,11 +291,17 @@ New file `tests/test_user_scoping.py`. Existing tests stay untouched and must pa
 | Test | Verifies |
 |---|---|
 | `test_seed_user_exists_after_init_db` | `users` has row `id=1` after first `init_db`; second `init_db` doesn't duplicate |
-| `test_backfill_existing_rows` | Insert legacy rows under the pre-migration schema, run `init_db`, assert every row's `user_id` is `1` |
-| `test_cross_user_match_isolation` | Insert match for `user_id=2` and one for `user_id=1`; query under `DEFAULT_USER_ID=1` returns only the user-1 row |
-| `test_apply_lock_per_user` | User 1 locks flat 99; user 2 also locks flat 99 (allowed by composite PK); user 1 cannot double-lock flat 99 |
-| `test_rebuild_apply_locks_idempotent` | Run `init_db` twice; second run no-ops, table contents preserved |
-| `test_users_table_unique_email_when_set` | Two no-email users coexist; two users with same non-NULL email rejected |
+| `test_backfill_existing_rows` | Pre-populate `matches` / `applications` / `apply_locks` under the pre-migration schema (no `user_id`), run `init_db`, assert every row's `user_id` is `1` and row counts match |
+| `test_cross_user_match_isolation_in_view` | Insert matches for both `user_id=1` and `user_id=2`; assert the dashboard `view.py` query returns only the user-1 row |
+| `test_cross_user_isolation_in_dispatcher` | Insert pending matches for `user_id=1` and `user_id=2`; run the notification dispatcher under `DEFAULT_USER_ID=1`; assert the user-2 match's `notified_at` is still NULL afterwards (i.e. the dispatcher didn't fire on or stamp another user's row) |
+| `test_cross_user_isolation_in_stats` | Insert decided matches under both users; assert `stats.get_stats()` (or equivalent) counts only the user-1 rows |
+| `test_already_applied_guard_per_user` | Insert a `status='submitted'` `applications` row for `user_id=2` on flat 99; assert user 1 can still acquire `apply.py`'s already-applied gate against flat 99 (i.e. the guard does not see user 2's row) |
+| `test_apply_lock_per_user` | User 1 acquires lock on flat 99; user 2 independently acquires a lock on flat 99 (allowed by the `(flat_id, user_id)` composite PK); user 1 cannot double-lock flat 99 |
+| `test_stale_lock_reaper_isolation` | User 2 holds a stale lock on flat 99 (older than `apply_timeout_sec() + 60`); user 1 calls `_acquire_lock(flat=99)` which triggers the stale-lock reaper. Assert: user 1 successfully acquires `(flat=99, user=1)`, and user 2's stale lock is **not** deleted (the reaper only touches the calling user's own rows). |
+| `test_rebuild_user_scoped_tables_idempotent` | Run `init_db` twice; second run no-ops (no rebuild executed because all three tables already have `user_id`); row counts and contents preserved across runs |
+| `test_users_table_unique_email_rejects_duplicates` | Two users with the same non-NULL email — second insert raises `IntegrityError` |
+| `test_users_table_allows_multiple_no_email` | Two users with `email=NULL` coexist (SQLite treats NULLs as distinct in unique indexes) |
+| `test_matches_unique_constraint_widened` | Insert a match row for user 1 with profile_hash X / flat 7 / decision 'match'; insert the same combination for user 2 — both succeed (the widened UNIQUE allows it). Insert the same combination for user 1 again — `INSERT OR IGNORE` no-ops as expected. |
 
 Coverage target matches the rest of the codebase (≥95% on changed modules).
 
@@ -225,19 +309,18 @@ Coverage target matches the rest of the codebase (≥95% on changed modules).
 
 | Risk | Mitigation |
 |---|---|
-| Backfill migration corrupts a live single-user DB | `apply_locks` rebuild runs in one transaction; idempotency check before rebuild; covered by `test_rebuild_apply_locks_idempotent` |
-| Forgotten query somewhere reads or writes unscoped data | grep audit of every `conn.execute` callsite touching user-scoped tables; reviewer pass; cross-user isolation tests would catch it for `matches` |
-| FK on `user_id` fails because the seed user is created after the ALTER TABLE | `init_db` ordering enforced: `users` CREATE → seed INSERT → `ensure_columns` → apply-locks rebuild. Backfill test covers it. |
-| Existing single-user installs upgrade in place and lose data | The ALTER TABLE `DEFAULT 1` preserves all rows; the apply-locks rebuild copies all rows. Tested by `test_backfill_existing_rows` |
+| Backfill migration corrupts a live single-user DB | All three rebuilds run inside a single `BEGIN IMMEDIATE` transaction; per-table column probes skip already-migrated tables; `DROP TABLE IF EXISTS <name>_new` at the start of each rebuild block recovers from a half-finished previous attempt. Covered by `test_backfill_existing_rows` and `test_rebuild_user_scoped_tables_idempotent`. |
+| Forgotten query somewhere reads or writes unscoped data | The mechanical grep audit in §5.4; cross-user isolation tests for `view.py`, dispatcher, stats, and `apply.py`'s already-applied guard; stale-lock reaper isolation test |
+| FK on `user_id` fails because the seed user is created after the rebuild's `INSERT … SELECT 1, …` step | `init_db` ordering enforced in §5.2: `CREATE TABLE users` (step 1) → `ensure_default_user` (step 2) → `_rebuild_user_scoped_tables` (step 3). The backfill test covers it explicitly. |
+| Existing single-user installs upgrade in place and lose data | Each rebuild's `INSERT INTO ..._new SELECT ... FROM ...` copies every row before `DROP TABLE`; transaction rollback on failure leaves the original table intact. Tested by `test_backfill_existing_rows`. |
+| `matches.UNIQUE` constraint widening forgotten | The post-rebuild `SCHEMAS` `CREATE TABLE` for `matches` is the single source of truth and the rebuild SQL must mirror it. `test_matches_unique_constraint_widened` asserts the runtime behavior. |
 
 ## 8. Migration order (one-shot, on next `init_db`)
 
-1. `CREATE TABLE users IF NOT EXISTS`.
+1. `CREATE TABLE users IF NOT EXISTS` (and any other entry in `SCHEMAS`, including the post-rebuild shapes for fresh installs).
 2. `INSERT OR IGNORE` seed user `(id=1, email=NULL, created_at=now)`.
-3. `ALTER TABLE matches ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id)`.
-4. `ALTER TABLE applications ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id)`.
-5. If `apply_locks` lacks a `user_id` column: rebuild via the SQL block in §4.4.
-6. `CREATE INDEX IF NOT EXISTS` the two new composite indexes.
+3. Open `BEGIN IMMEDIATE`. For each of `matches`, `applications`, `apply_locks`: if `PRAGMA table_info(<name>)` already lists a `user_id` column, skip; otherwise execute the rebuild block from §4.4 (`DROP TABLE IF EXISTS <name>_new` → `CREATE TABLE <name>_new` → `INSERT INTO <name>_new SELECT ..., 1, ...` → `DROP TABLE <name>` → `ALTER TABLE <name>_new RENAME TO <name>`). `COMMIT`.
+4. `CREATE INDEX IF NOT EXISTS` the two new composite indexes (already in `SCHEMAS`, so step 1 covers fresh installs; this is a no-op on re-runs).
 
 After this completes, every existing row is owned by user 1 and the schema is ready for Phase 5 to layer real users on top.
 
@@ -248,4 +331,7 @@ After this completes, every existing row is owned by user 1 and the schema is re
 - [ ] `init_db` on a pre-migration DB (existing single-user data) backfills every row to `user_id = 1` without data loss.
 - [ ] `flatpilot run` / `flatpilot dashboard` / `flatpilot apply` / `flatpilot doctor` all work unchanged from the user's perspective.
 - [ ] `tests/test_user_scoping.py` passes; existing test suite passes; `ruff check` and `mypy` clean.
-- [ ] No call site of `conn.execute` against `matches` / `applications` / `apply_locks` is missing a `user_id` clause.
+- [ ] No call site of `conn.execute` against `matches` / `applications` / `apply_locks` is missing a `user_id` clause (verified by the §5.4 grep audit).
+- [ ] `matches.UNIQUE` constraint includes `user_id`; verified by `test_matches_unique_constraint_widened`.
+- [ ] `apply_locks.PRIMARY KEY` is `(flat_id, user_id)`; verified by `test_apply_lock_per_user`.
+- [ ] Rebuild helper is idempotent and crash-safe (`DROP TABLE IF EXISTS <name>_new` guard plus `BEGIN IMMEDIATE` transaction); verified by `test_rebuild_user_scoped_tables_idempotent`.

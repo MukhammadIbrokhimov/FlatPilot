@@ -49,15 +49,6 @@ _NAME_PATTERN = re.compile(r"^[a-z0-9_-]+$")
 _PLATFORM_VALUES = {"wg-gesucht", "kleinanzeigen", "inberlinwohnen"}
 
 
-def _maybe_add_auto_apply(profile: Profile, *, answer: bool) -> Profile:
-    if any(ss.name == "auto-default" for ss in profile.saved_searches):
-        return profile
-    if not answer:
-        return profile
-    new = list(profile.saved_searches)
-    new.append(SavedSearch(name="auto-default", auto_apply=True))
-    return profile.model_copy(update={"saved_searches": new})
-
 
 def _saved_searches_menu(out: Console, profile: Profile) -> Profile:
     """Drive add/edit/delete/caps interactively until user picks done.
@@ -528,14 +519,7 @@ def run(console: Console | None = None) -> Path | None:
         out.print(str(exc))
         raise
 
-    out.rule("Auto-apply (Phase 4)")
-    if not any(ss.name == "auto-default" for ss in profile.saved_searches):
-        enable = Confirm.ask(
-            "Enable auto-apply with a starter saved search? "
-            "(Use `flatpilot pause` to disable temporarily.)",
-            default=False,
-        )
-        profile = _maybe_add_auto_apply(profile, answer=enable)
+    profile = _saved_searches_menu(out, profile)
 
     out.print(
         f"[bold]{profile.city}[/bold] · {profile.radius_km} km · "

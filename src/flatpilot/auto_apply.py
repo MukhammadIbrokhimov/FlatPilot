@@ -17,6 +17,7 @@ from flatpilot.database import get_conn, init_db
 from flatpilot.fillers import get_filler
 from flatpilot.fillers.base import FillError
 from flatpilot.profile import Profile, SavedSearch, profile_hash
+from flatpilot.users import DEFAULT_USER_ID
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,10 @@ def is_paused() -> bool:
 
 
 def daily_cap_remaining(
-    conn: sqlite3.Connection, profile: Profile, platform: str
+    conn: sqlite3.Connection,
+    profile: Profile,
+    platform: str,
+    user_id: int = DEFAULT_USER_ID,
 ) -> int:
     cap = profile.auto_apply.daily_cap_per_platform.get(platform, 0)
     if cap <= 0:
@@ -62,14 +66,17 @@ def daily_cap_remaining(
     used = conn.execute(
         "SELECT COUNT(*) FROM applications "
         "WHERE platform = ? AND method = 'auto' "
-        "AND status = 'submitted' AND applied_at >= ?",
-        (platform, today_start),
+        "AND status = 'submitted' AND applied_at >= ? AND user_id = ?",
+        (platform, today_start, user_id),
     ).fetchone()[0]
     return max(0, cap - used)
 
 
 def cooldown_remaining_sec(
-    conn: sqlite3.Connection, profile: Profile, platform: str
+    conn: sqlite3.Connection,
+    profile: Profile,
+    platform: str,
+    user_id: int = DEFAULT_USER_ID,
 ) -> float:
     cooldown = profile.auto_apply.cooldown_seconds_per_platform.get(platform, 0)
     pacing = profile.auto_apply.pacing_seconds_per_platform.get(platform, 0)
@@ -79,10 +86,11 @@ def cooldown_remaining_sec(
     row = conn.execute(
         "SELECT MAX(applied_at) AS last FROM applications "
         "WHERE platform = ? AND method = 'auto' "
+        "AND user_id = ? "
         "AND ( status = 'submitted' "
         "      OR (status = 'failed' "
         "          AND (notes IS NULL OR notes NOT LIKE 'auto_skipped:%')))",
-        (platform,),
+        (platform, user_id),
     ).fetchone()
     last = row["last"] if row is not None else None
     if last is None:
@@ -91,14 +99,19 @@ def cooldown_remaining_sec(
     return max(0.0, effective - elapsed)
 
 
-def failures_for_flat(conn: sqlite3.Connection, flat_id: int) -> int:
+def failures_for_flat(
+    conn: sqlite3.Connection,
+    flat_id: int,
+    user_id: int = DEFAULT_USER_ID,
+) -> int:
     """Count consecutive FillError-style failures (status='failed', method='auto')
     for this flat, excluding auto_skipped rows."""
     row = conn.execute(
         "SELECT COUNT(*) AS n FROM applications "
         "WHERE flat_id = ? AND method = 'auto' AND status = 'failed' "
+        "AND user_id = ? "
         "AND (notes IS NULL OR notes NOT LIKE 'auto_skipped:%')",
-        (flat_id,),
+        (flat_id, user_id),
     ).fetchone()
     return int(row["n"])
 
@@ -120,7 +133,13 @@ def completeness_ok(profile: Profile, flat: dict) -> tuple[bool, str | None]:
     return True, None
 
 
-def run_pipeline_apply(profile: Profile, console, *, dry_run: bool = False) -> None:
+def run_pipeline_apply(
+    profile: Profile,
+    console,
+    *,
+    dry_run: bool = False,
+    user_id: int = DEFAULT_USER_ID,
+) -> None:
     if is_paused():
         console.print("[yellow]auto-apply: PAUSED (~/.flatpilot/PAUSE present)[/yellow]")
         return
@@ -138,16 +157,18 @@ def run_pipeline_apply(profile: Profile, console, *, dry_run: bool = False) -> N
         JOIN flats f ON f.id = m.flat_id
         WHERE m.decision = 'match'
           AND m.profile_version_hash = ?
+          AND m.user_id = ?
           AND m.matched_saved_searches_json != '[]'
           AND NOT EXISTS (
             SELECT 1 FROM applications a
             WHERE a.flat_id = m.flat_id
+              AND a.user_id = ?
               AND a.method = 'auto'
               AND a.status = 'submitted'
           )
         ORDER BY m.decided_at ASC
         """,
-        (phash,),
+        (phash, user_id, user_id),
     ).fetchall()
 
     saved_search_by_name = {ss.name: ss for ss in profile.saved_searches}
@@ -166,6 +187,7 @@ def run_pipeline_apply(profile: Profile, console, *, dry_run: bool = False) -> N
             candidate_names=candidate_names,
             saved_search_by_name=saved_search_by_name,
             dry_run=dry_run,
+            user_id=user_id,
         )
 
 
@@ -173,6 +195,7 @@ def _try_flat(
     *, conn: sqlite3.Connection, console, profile: Profile,
     flat: dict, platform: str, candidate_names: list[str],
     saved_search_by_name: dict[str, SavedSearch], dry_run: bool,
+    user_id: int = DEFAULT_USER_ID,
 ) -> None:
     flat_id = int(flat["id"])
 
@@ -185,14 +208,14 @@ def _try_flat(
         if ss.platforms and platform not in ss.platforms:
             continue
 
-        cap = daily_cap_remaining(conn, profile, platform)
+        cap = daily_cap_remaining(conn, profile, platform, user_id=user_id)
         if cap <= 0:
             console.print(
                 f"[dim]auto-apply: cap reached on {platform}; skipping flat {flat_id}[/dim]"
             )
             return
 
-        wait = cooldown_remaining_sec(conn, profile, platform)
+        wait = cooldown_remaining_sec(conn, profile, platform, user_id=user_id)
         if wait > 0:
             console.print(
                 f"[dim]auto-apply: cooldown {wait:.0f}s on {platform}; "
@@ -200,7 +223,10 @@ def _try_flat(
             )
             return
 
-        if failures_for_flat(conn, flat_id) >= profile.auto_apply.max_failures_per_flat:
+        if (
+            failures_for_flat(conn, flat_id, user_id=user_id)
+            >= profile.auto_apply.max_failures_per_flat
+        ):
             console.print(
                 f"[dim]auto-apply: flat {flat_id} has reached max failures "
                 f"({profile.auto_apply.max_failures_per_flat}); skipping[/dim]"
@@ -228,6 +254,7 @@ def _try_flat(
                 notes=f"auto_skipped: {reason}",
                 method="auto",
                 saved_search=name,
+                user_id=user_id,
             )
             console.print(
                 f"[yellow]auto-apply: skipped flat {flat_id} ({reason})[/yellow]"
@@ -242,7 +269,7 @@ def _try_flat(
             return
 
         try:
-            apply_to_flat(flat_id, method="auto", saved_search=name)
+            apply_to_flat(flat_id, method="auto", saved_search=name, user_id=user_id)
             console.print(
                 f"[green]auto-apply: submitted flat {flat_id} "
                 f"via saved-search '{name}'[/green]"

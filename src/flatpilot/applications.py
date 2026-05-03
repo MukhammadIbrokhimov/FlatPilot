@@ -13,18 +13,27 @@ import sqlite3
 from datetime import UTC, datetime
 from typing import Literal
 
+from flatpilot.users import DEFAULT_USER_ID
+
 ResponseStatus = Literal["viewing_invited", "rejected", "no_response"]
 
 
-def record_skip(conn: sqlite3.Connection, *, match_id: int, profile_hash: str) -> None:
+def record_skip(
+    conn: sqlite3.Connection,
+    *,
+    match_id: int,
+    profile_hash: str,
+    user_id: int = DEFAULT_USER_ID,
+) -> None:
     """Insert a 'skipped' matches row for the flat referenced by ``match_id``.
 
     Audit-preserving: leaves the original 'match' row alone. Idempotent
-    via the table's ``UNIQUE (flat_id, profile_version_hash, decision)``
+    via the table's ``UNIQUE (user_id, flat_id, profile_version_hash, decision)``
     constraint.
     """
     row = conn.execute(
-        "SELECT flat_id FROM matches WHERE id = ?", (match_id,)
+        "SELECT flat_id FROM matches WHERE id = ? AND user_id = ?",
+        (match_id, user_id),
     ).fetchone()
     if row is None:
         raise LookupError(f"no match with id {match_id}")
@@ -33,11 +42,11 @@ def record_skip(conn: sqlite3.Connection, *, match_id: int, profile_hash: str) -
     conn.execute(
         """
         INSERT OR IGNORE INTO matches
-            (flat_id, profile_version_hash, decision,
+            (user_id, flat_id, profile_version_hash, decision,
              decision_reasons_json, decided_at)
-        VALUES (?, ?, 'skipped', '[]', ?)
+        VALUES (?, ?, ?, 'skipped', '[]', ?)
         """,
-        (flat_id, profile_hash, now),
+        (user_id, flat_id, profile_hash, now),
     )
 
 
@@ -47,6 +56,7 @@ def record_response(
     application_id: int,
     status: ResponseStatus,
     response_text: str,
+    user_id: int = DEFAULT_USER_ID,
 ) -> None:
     """Update an applications row with a landlord reply.
 
@@ -59,7 +69,8 @@ def record_response(
     if status not in ("viewing_invited", "rejected", "no_response"):
         raise ValueError(f"unsupported response status: {status!r}")
     row = conn.execute(
-        "SELECT id FROM applications WHERE id = ?", (application_id,)
+        "SELECT id FROM applications WHERE id = ? AND user_id = ?",
+        (application_id, user_id),
     ).fetchone()
     if row is None:
         raise LookupError(f"no application with id {application_id}")
@@ -71,6 +82,7 @@ def record_response(
                response_text = ?,
                response_received_at = ?
          WHERE id = ?
+           AND user_id = ?
         """,
-        (status, response_text, now, application_id),
+        (status, response_text, now, application_id, user_id),
     )

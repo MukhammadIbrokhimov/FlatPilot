@@ -13,7 +13,17 @@ SQLite quirks worth remembering:
 
 from __future__ import annotations
 
-from flatpilot.database import COLUMNS, SCHEMAS
+from flatpilot.database import SCHEMAS
+
+USERS_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT UNIQUE,
+    created_at TEXT NOT NULL
+)
+"""
+
+SCHEMAS["users"] = USERS_CREATE_SQL
 
 FLATS_CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS flats (
@@ -54,6 +64,7 @@ SCHEMAS["flats"] = FLATS_CREATE_SQL
 MATCHES_CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS matches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id),
     flat_id INTEGER NOT NULL REFERENCES flats(id) ON DELETE CASCADE,
     profile_version_hash TEXT NOT NULL,
     decision TEXT NOT NULL CHECK (decision IN ('match', 'reject', 'skipped')),
@@ -61,7 +72,8 @@ CREATE TABLE IF NOT EXISTS matches (
     decided_at TEXT NOT NULL,
     notified_at TEXT,
     notified_channels_json TEXT,
-    UNIQUE (flat_id, profile_version_hash, decision)
+    matched_saved_searches_json TEXT NOT NULL DEFAULT '[]',
+    UNIQUE (user_id, flat_id, profile_version_hash, decision)
 )
 """
 
@@ -76,6 +88,7 @@ SCHEMAS["matches"] = MATCHES_CREATE_SQL
 APPLICATIONS_CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS applications (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id),
     flat_id INTEGER NOT NULL REFERENCES flats(id) ON DELETE CASCADE,
     platform TEXT NOT NULL,
     listing_url TEXT NOT NULL,
@@ -93,7 +106,8 @@ CREATE TABLE IF NOT EXISTS applications (
     ),
     response_received_at TEXT,
     response_text TEXT,
-    notes TEXT
+    notes TEXT,
+    triggered_by_saved_search TEXT
 )
 """
 
@@ -109,20 +123,15 @@ SCHEMAS["applications"] = APPLICATIONS_CREATE_SQL
 # (kill -9, OS panic) so the slot doesn't block forever.
 APPLY_LOCKS_CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS apply_locks (
-    flat_id INTEGER PRIMARY KEY,
+    flat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id),
     acquired_at TEXT NOT NULL,
-    pid INTEGER NOT NULL
+    pid INTEGER NOT NULL,
+    PRIMARY KEY (flat_id, user_id)
 )
 """
 
 SCHEMAS["apply_locks"] = APPLY_LOCKS_CREATE_SQL
-
-COLUMNS["matches"] = {
-    "matched_saved_searches_json": "TEXT NOT NULL DEFAULT '[]'",
-}
-COLUMNS["applications"] = {
-    "triggered_by_saved_search": "TEXT",
-}
 
 APPLICATIONS_METHOD_APPLIED_AT_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_applications_method_applied_at
@@ -130,3 +139,18 @@ CREATE INDEX IF NOT EXISTS idx_applications_method_applied_at
 """
 
 SCHEMAS["idx_applications_method_applied_at"] = APPLICATIONS_METHOD_APPLIED_AT_INDEX_SQL
+
+MATCHES_USER_DECIDED_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_matches_user_decided
+    ON matches(user_id, decided_at)
+"""
+
+SCHEMAS["idx_matches_user_decided"] = MATCHES_USER_DECIDED_INDEX_SQL
+
+
+APPLICATIONS_USER_APPLIED_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_applications_user_applied
+    ON applications(user_id, applied_at)
+"""
+
+SCHEMAS["idx_applications_user_applied"] = APPLICATIONS_USER_APPLIED_INDEX_SQL

@@ -183,15 +183,6 @@ def enabled_channels(profile: Profile) -> list[str]:
     return channels
 
 
-def _parse_channels(raw: str | None) -> set[str]:
-    if not raw:
-        return set()
-    try:
-        return set(json.loads(raw))
-    except (TypeError, json.JSONDecodeError):
-        return set()
-
-
 def _parse_signatures(raw: str | None) -> set[str]:
     """Parse notified_channels_json with legacy bare-name compat.
 
@@ -238,7 +229,7 @@ def _send(
             profile,
             template.render_html(flat),
             parse_mode="HTML",
-            **{k: v for k, v in transport_kwargs.items() if k in ("bot_token_env", "chat_id")},
+            **transport_kwargs,
         )
     elif channel == "email":
         smtp_env = transport_kwargs.get("smtp_env")
@@ -252,7 +243,7 @@ def _send(
             _subject_for(flat),
             template.render_plain(flat),
             template.render_html(flat),
-            **({"smtp_env": smtp_env} if smtp_env is not None else {}),
+            smtp_env=smtp_env,
         )
     else:
         raise ValueError(f"unknown channel: {channel!r}")

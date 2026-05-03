@@ -134,7 +134,7 @@ def test_dispatch_definer_replaces_base_telegram(tmp_db, monkeypatch):
     assert "telegram" in by_channel
     assert by_channel["telegram"].get("chat_id") == "k_chat"
     assert "email" in by_channel
-    assert by_channel["email"] == {} or by_channel["email"].get("smtp_env") == "SMTP"
+    assert by_channel["email"] == {}
 
 
 def test_dispatch_explicit_suppress_via_enabled_false(tmp_db, monkeypatch):

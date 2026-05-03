@@ -56,6 +56,7 @@ def run_pipeline_once(
 
 
 def _ensure_scrapers_registered() -> None:
+    import flatpilot.scrapers.immoscout24_rss  # noqa: F401 — triggers @register
     import flatpilot.scrapers.inberlinwohnen  # noqa: F401 — triggers @register
     import flatpilot.scrapers.kleinanzeigen  # noqa: F401 — triggers @register
     import flatpilot.scrapers.wg_gesucht  # noqa: F401 — triggers @register

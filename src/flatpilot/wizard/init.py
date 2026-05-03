@@ -46,7 +46,7 @@ from flatpilot.profile import (
 logger = logging.getLogger(__name__)
 
 _NAME_PATTERN = re.compile(r"^[a-z0-9_-]+$")
-_PLATFORM_VALUES = {"wg-gesucht", "kleinanzeigen", "inberlinwohnen"}
+_PLATFORM_VALUES = {"wg-gesucht", "kleinanzeigen", "inberlinwohnen", "immoscout24"}
 
 
 

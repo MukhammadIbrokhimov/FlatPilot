@@ -210,6 +210,13 @@ class Profile(BaseModel):
     auto_apply: AutoApplySettings = Field(default_factory=AutoApplySettings)
     saved_searches: list[SavedSearch] = Field(default_factory=list)
 
+    # ImmoScout24 has no scrape path — instead the user copy-pastes the RSS
+    # URL of each saved search from their account into this list, and the
+    # immoscout24 RSS adapter consumes them (see
+    # ``flatpilot.scrapers.immoscout24_rss``). Empty list disables the
+    # platform.
+    immoscout24_rss_urls: list[str] = Field(default_factory=list)
+
     @model_validator(mode="after")
     def _ranges_are_ordered(self) -> Profile:
         if self.rent_max_warm < self.rent_min_warm:

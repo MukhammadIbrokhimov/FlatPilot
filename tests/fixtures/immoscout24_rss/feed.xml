@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>ImmobilienScout24 Saved Search — Berlin Mitte</title>
+    <link>https://www.immobilienscout24.de/Suche/de/berlin/berlin/wohnung-mieten</link>
+    <description>Saved search results</description>
+    <language>de-de</language>
+    <pubDate>Sat, 02 May 2026 10:30:00 +0200</pubDate>
+
+    <item>
+      <title>2-Zimmer-Wohnung in Berlin Mitte | 60m² | 1.200 €</title>
+      <link>https://www.immobilienscout24.de/expose/123456789</link>
+      <guid isPermaLink="true">https://www.immobilienscout24.de/expose/123456789</guid>
+      <pubDate>Sat, 02 May 2026 09:15:00 +0200</pubDate>
+      <description><![CDATA[<p>Helle 2-Zimmer-Wohnung im Herzen von Berlin Mitte.</p><p>Kaltmiete: 950 €<br/>Nebenkosten: 250 €<br/>Gesamtmiete: 1.200 €<br/>Wohnfläche: 60 m²<br/>Zimmer: 2<br/>Frei ab: 01.07.2026</p>]]></description>
+    </item>
+
+    <item>
+      <title>3 Zimmer | 85 m² | Prenzlauer Berg | 1.450 € warm</title>
+      <link>https://www.immobilienscout24.de/expose/987654321</link>
+      <guid isPermaLink="true">https://www.immobilienscout24.de/expose/987654321</guid>
+      <pubDate>Fri, 01 May 2026 18:42:00 +0200</pubDate>
+      <description>Charmante Altbauwohnung in Prenzlauer Berg. WBS erforderlich. Verfügbar ab 15.06.2026.</description>
+    </item>
+
+    <item>
+      <title>Studio in Kreuzberg</title>
+      <link>https://www.immobilienscout24.de/expose/555000111</link>
+      <guid isPermaLink="false">555000111</guid>
+      <pubDate>Fri, 01 May 2026 12:00:00 +0200</pubDate>
+      <description>Kompaktes Apartment, möbliert.</description>
+    </item>
+  </channel>
+</rss>

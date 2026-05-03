@@ -33,6 +33,7 @@ dependencies = [
     "pyyaml>=6.0",
     "pydantic>=2.6",
     "geopy>=2.4",
+    "feedparser>=6.0",
 ]
 
 [project.optional-dependencies]

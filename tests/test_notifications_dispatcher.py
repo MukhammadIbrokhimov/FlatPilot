@@ -38,7 +38,14 @@ def _seed_match(conn, *, flat_id, profile_hash, decision="match"):
 
 
 def test_dispatch_pending_skips_stale_hash_rows(tmp_db, monkeypatch):
-    profile = Profile.load_example()
+    base = Profile.load_example()
+    profile = base.model_copy(update={
+        "notifications": base.notifications.model_copy(update={
+            "telegram": base.notifications.telegram.model_copy(update={
+                "enabled": True, "chat_id": "test_chat",
+            })
+        })
+    })
     current = profile_hash(profile)
     stale = "deadbeef" * 4  # any string != current
 
@@ -49,11 +56,10 @@ def test_dispatch_pending_skips_stale_hash_rows(tmp_db, monkeypatch):
 
     sends: list[tuple[str, int]] = []
 
-    def fake_send(channel, flat, profile):
+    def fake_send(channel, flat, profile, **kwargs):
         sends.append((channel, flat["id"]))
 
     monkeypatch.setattr(disp, "_send", fake_send)
-    monkeypatch.setattr(disp, "enabled_channels", lambda _p: ["telegram"])
 
     disp.dispatch_pending(profile)
     assert sends == [("telegram", flat_a)]
@@ -62,13 +68,20 @@ def test_dispatch_pending_skips_stale_hash_rows(tmp_db, monkeypatch):
 def test_mark_stale_flips_notified_at_without_send(tmp_db, monkeypatch):
     """Stale-hash rows get notified_at stamped via _mark_stale_matches_notified.
 
-    The mark-stale step only runs when channels are enabled (dispatcher.py:121
-    early-returns on empty channels), so the test enables telegram but
-    points _send at a no-op. Stale rows should be silently stamped without
-    invoking _send; current-hash rows should not be stamped because the no-
-    op _send doesn't add anything to ``notified``.
+    The mark-stale step only runs when at least one channel could fire, so
+    the test enables telegram but points _send at a no-op. Stale rows
+    should be silently stamped without invoking _send; the current-hash
+    row's _send returns successfully (no exception) so its signature is
+    added to ``notified`` and the row gets stamped too.
     """
-    profile = Profile.load_example()
+    base = Profile.load_example()
+    profile = base.model_copy(update={
+        "notifications": base.notifications.model_copy(update={
+            "telegram": base.notifications.telegram.model_copy(update={
+                "enabled": True, "chat_id": "test_chat",
+            })
+        })
+    })
     current = profile_hash(profile)
     stale = "00" * 8
 
@@ -79,11 +92,10 @@ def test_mark_stale_flips_notified_at_without_send(tmp_db, monkeypatch):
 
     sent: list[str] = []
 
-    def fake_send(channel, flat, profile):
+    def fake_send(channel, flat, profile, **kwargs):
         sent.append(channel)
 
     monkeypatch.setattr(disp, "_send", fake_send)
-    monkeypatch.setattr(disp, "enabled_channels", lambda _p: ["telegram"])
 
     disp.dispatch_pending(profile)
 
@@ -157,7 +169,7 @@ def test_send_test_invokes_each_enabled_channel_once(monkeypatch):
 
     calls: list[str] = []
 
-    def fake_send(channel, flat, profile):
+    def fake_send(channel, flat, profile, **kwargs):
         calls.append(channel)
 
     monkeypatch.setattr(disp, "_send", fake_send)

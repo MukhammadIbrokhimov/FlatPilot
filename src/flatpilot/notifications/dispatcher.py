@@ -192,6 +192,30 @@ def _parse_channels(raw: str | None) -> set[str]:
         return set()
 
 
+def _parse_signatures(raw: str | None) -> set[str]:
+    """Parse notified_channels_json with legacy bare-name compat.
+
+    Bare channel names (legacy format pre-2026-05) are upgraded to
+    '<channel>:base' signatures so dedup against new pending dispatches
+    works correctly.
+    """
+    if not raw:
+        return set()
+    try:
+        items = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return set()
+    out: set[str] = set()
+    for item in items:
+        if not isinstance(item, str):
+            continue
+        if ":" in item:
+            out.add(item)  # already in signature format
+        else:
+            out.add(f"{item}:base")  # upgrade bare name
+    return out
+
+
 def _email_recipient(smtp_env: str | None = None) -> str | None:
     """``EMAIL_TO`` is a global override; otherwise resolve <prefix>_FROM."""
     prefix = smtp_env if smtp_env is not None else "SMTP"
@@ -203,19 +227,32 @@ def _subject_for(flat: dict[str, Any]) -> str:
     return f"FlatPilot: {title}"
 
 
-def _send(channel: str, flat: dict[str, Any], profile: Profile) -> None:
+def _send(
+    channel: str,
+    flat: dict[str, Any],
+    profile: Profile,
+    **transport_kwargs: str,
+) -> None:
     if channel == "telegram":
-        telegram_adapter.send(profile, template.render_html(flat), parse_mode="HTML")
+        telegram_adapter.send(
+            profile,
+            template.render_html(flat),
+            parse_mode="HTML",
+            **{k: v for k, v in transport_kwargs.items() if k in ("bot_token_env", "chat_id")},
+        )
     elif channel == "email":
-        # smtp_env threaded through in Task 6 once dispatcher resolves overrides per match.
-        recipient = _email_recipient()
+        smtp_env = transport_kwargs.get("smtp_env")
+        recipient = _email_recipient(smtp_env=smtp_env)
         if not recipient:
-            raise email_adapter.EmailError("no recipient — set EMAIL_TO or SMTP_FROM")
+            raise email_adapter.EmailError(
+                f"no recipient — set EMAIL_TO or {(smtp_env or 'SMTP')}_FROM"
+            )
         email_adapter.send(
             recipient,
             _subject_for(flat),
             template.render_plain(flat),
             template.render_html(flat),
+            **({"smtp_env": smtp_env} if smtp_env is not None else {}),
         )
     else:
         raise ValueError(f"unknown channel: {channel!r}")
@@ -248,8 +285,14 @@ def _mark_stale_matches_notified(conn: sqlite3.Connection, current_hash: str) ->
 
 
 def dispatch_pending(profile: Profile) -> DispatchSummary:
-    channels = enabled_channels(profile)
-    if not channels:
+    # Early-out only if NEITHER base nor any saved search could ever fire.
+    base_has_channel = (
+        profile.notifications.telegram.enabled or profile.notifications.email.enabled
+    )
+    any_search_has_notifications = any(
+        ss.notifications is not None for ss in profile.saved_searches
+    )
+    if not base_has_channel and not any_search_has_notifications:
         logger.info("no channels enabled in profile; nothing to send")
         return {"processed": 0, "sent": {}, "failed": {}}
 
@@ -267,6 +310,7 @@ def dispatch_pending(profile: Profile) -> DispatchSummary:
         """
         SELECT m.id AS match_id,
                m.notified_channels_json,
+               m.matched_saved_searches_json,
                COALESCE(f.canonical_flat_id, f.id) AS canonical_id,
                f.*
         FROM matches m
@@ -281,7 +325,7 @@ def dispatch_pending(profile: Profile) -> DispatchSummary:
     # cluster. Earned by two scenarios the matcher's root-only filter
     # can't cover: legacy match rows written before PR #21, and any
     # row churn from a future `dedup --rebuild` that re-clusters already
-    # matched flats. For each (canonical_id, channel), we send at most
+    # matched flats. For each (canonical_id, signature), we send at most
     # once per run; this inheritance is in-memory only, so if a
     # canonical's match row is later deleted (e.g. the root flat
     # is delisted, cascading ON DELETE), a surviving sibling becomes
@@ -296,23 +340,33 @@ def dispatch_pending(profile: Profile) -> DispatchSummary:
         flat = dict(row)
         match_id = flat.pop("match_id")
         canonical_id = flat.pop("canonical_id")
-        notified = _parse_channels(flat.pop("notified_channels_json", None))
+        matched_names_raw = flat.pop("matched_saved_searches_json", "[]") or "[]"
+        try:
+            matched_names = json.loads(matched_names_raw)
+        except (TypeError, json.JSONDecodeError):
+            matched_names = []
+        notified = _parse_signatures(flat.pop("notified_channels_json", None))
         already_for_canonical = sent_canonicals.setdefault(canonical_id, set())
+
+        resolved = _resolve_channels_for_match(profile, matched_names)
         effective = notified | already_for_canonical
-        pending = [c for c in channels if c not in effective]
+        pending = [t for t in resolved if t[1] not in effective]
         if not pending:
             continue
 
         processed += 1
-        for channel in pending:
+        for channel, signature, transport_kwargs in pending:
             try:
-                _send(channel, flat, profile)
+                _send(channel, flat, profile, **transport_kwargs)
             except (telegram_adapter.TelegramError, email_adapter.EmailError) as exc:
-                logger.warning("match %d channel %s failed: %s", match_id, channel, exc)
+                logger.warning(
+                    "match %d channel %s (%s) failed: %s",
+                    match_id, channel, signature, exc,
+                )
                 failed[channel] = failed.get(channel, 0) + 1
                 continue
-            notified.add(channel)
-            already_for_canonical.add(channel)
+            notified.add(signature)
+            already_for_canonical.add(signature)
             sent[channel] = sent.get(channel, 0) + 1
 
         if notified:

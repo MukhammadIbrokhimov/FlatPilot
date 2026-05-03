@@ -24,6 +24,7 @@ from typing import Any
 from pydantic import ValidationError
 from rich.console import Console
 from rich.prompt import Confirm, IntPrompt, Prompt
+from rich.table import Table
 
 from flatpilot.config import PROFILE_PATH, ensure_dirs
 from flatpilot.matcher.distance import geocode
@@ -49,6 +50,99 @@ def _maybe_add_auto_apply(profile: Profile, *, answer: bool) -> Profile:
     new = list(profile.saved_searches)
     new.append(SavedSearch(name="auto-default", auto_apply=True))
     return profile.model_copy(update={"saved_searches": new})
+
+
+def _saved_searches_menu(out: Console, profile: Profile) -> Profile:
+    """Drive add/edit/delete/caps interactively until user picks done.
+
+    Returns a possibly-modified Profile. Pure of side effects beyond
+    Prompt.ask / Confirm.ask interaction, so easy to test by patching
+    those.
+    """
+    while True:
+        _render_saved_searches_table(out, profile)
+        has_searches = bool(profile.saved_searches)
+        choices = ["add"]
+        if has_searches:
+            choices += ["edit", "delete"]
+        choices += ["caps", "done"]
+        action = Prompt.ask(
+            "Action", choices=choices, default="done",
+        )
+        if action == "done":
+            return profile
+        if action == "add":
+            profile = _add_saved_search(out, profile)
+        elif action == "edit":
+            profile = _edit_saved_search(out, profile)
+        elif action == "delete":
+            profile = _delete_saved_search(out, profile)
+        elif action == "caps":
+            profile = _edit_caps_and_cooldowns(out, profile)
+
+
+def _render_saved_searches_table(out: Console, profile: Profile) -> None:
+    out.rule("Saved searches & auto-apply")
+    if not profile.saved_searches:
+        out.print("[dim](no saved searches yet)[/dim]")
+        return
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("#", justify="right")
+    table.add_column("Name")
+    table.add_column("Auto-apply")
+    table.add_column("Platforms")
+    table.add_column("Notifications")
+    for i, ss in enumerate(profile.saved_searches, start=1):
+        table.add_row(
+            str(i),
+            ss.name,
+            "✓" if ss.auto_apply else "✗",
+            ", ".join(ss.platforms) if ss.platforms else "any",
+            _summarize_notifications(ss),
+        )
+    out.print(table)
+
+
+def _summarize_notifications(ss: SavedSearch) -> str:
+    if ss.notifications is None:
+        return "base"
+    parts: list[str] = []
+    if ss.notifications.telegram is not None:
+        if ss.notifications.telegram.enabled:
+            label = "telegram"
+            if (
+                ss.notifications.telegram.bot_token_env is not None
+                or ss.notifications.telegram.chat_id is not None
+            ):
+                label += " (override)"
+            parts.append(label)
+        else:
+            parts.append("telegram (off)")
+    if ss.notifications.email is not None:
+        if ss.notifications.email.enabled:
+            label = "email"
+            if ss.notifications.email.smtp_env is not None:
+                label += " (override)"
+            parts.append(label)
+        else:
+            parts.append("email (off)")
+    return " + ".join(parts) if parts else "none"
+
+
+def _add_saved_search(out: Console, profile: Profile) -> Profile:
+    raise NotImplementedError("Task 9 implements this")
+
+
+def _edit_saved_search(out: Console, profile: Profile) -> Profile:
+    raise NotImplementedError("Task 9 implements this")
+
+
+def _delete_saved_search(out: Console, profile: Profile) -> Profile:
+    raise NotImplementedError("Task 10 implements this")
+
+
+def _edit_caps_and_cooldowns(out: Console, profile: Profile) -> Profile:
+    raise NotImplementedError("Task 11 implements this")
 
 
 def run(console: Console | None = None) -> Path | None:

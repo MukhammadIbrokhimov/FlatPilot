@@ -42,6 +42,7 @@ from flatpilot.errors import FlatPilotError, ProfileMissingError
 from flatpilot.fillers import get_filler
 from flatpilot.fillers.base import FillError, FillReport
 from flatpilot.profile import Profile, load_profile
+from flatpilot.users import DEFAULT_USER_ID
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +132,12 @@ class ApplyLockHeldError(AlreadyAppliedError):
     """
 
 
-def acquire_apply_lock(conn: sqlite3.Connection, flat_id: int) -> None:
+def acquire_apply_lock(
+    conn: sqlite3.Connection,
+    flat_id: int,
+    *,
+    user_id: int = DEFAULT_USER_ID,
+) -> None:
     """Take a cross-process lock on ``flat_id``.
 
     Two FlatPilot processes — typically the CLI ``flatpilot apply 42``
@@ -156,18 +162,18 @@ def acquire_apply_lock(conn: sqlite3.Connection, flat_id: int) -> None:
         - timedelta(seconds=apply_timeout_sec() + STALE_APPLY_BUFFER_SEC)
     ).isoformat()
     conn.execute(
-        "DELETE FROM apply_locks WHERE flat_id = ? AND acquired_at < ?",
-        (flat_id, threshold_ts),
+        "DELETE FROM apply_locks WHERE flat_id = ? AND user_id = ? AND acquired_at < ?",
+        (flat_id, user_id, threshold_ts),
     )
     try:
         conn.execute(
-            "INSERT INTO apply_locks (flat_id, acquired_at, pid) VALUES (?, ?, ?)",
-            (flat_id, datetime.now(UTC).isoformat(), os.getpid()),
+            "INSERT INTO apply_locks (flat_id, user_id, acquired_at, pid) VALUES (?, ?, ?, ?)",
+            (flat_id, user_id, datetime.now(UTC).isoformat(), os.getpid()),
         )
     except sqlite3.IntegrityError as exc:
         existing = conn.execute(
-            "SELECT pid, acquired_at FROM apply_locks WHERE flat_id = ?",
-            (flat_id,),
+            "SELECT pid, acquired_at FROM apply_locks WHERE flat_id = ? AND user_id = ?",
+            (flat_id, user_id),
         ).fetchone()
         if existing is not None:
             msg = (
@@ -183,13 +189,21 @@ def acquire_apply_lock(conn: sqlite3.Connection, flat_id: int) -> None:
         raise ApplyLockHeldError(msg) from exc
 
 
-def release_apply_lock(conn: sqlite3.Connection, flat_id: int) -> None:
+def release_apply_lock(
+    conn: sqlite3.Connection,
+    flat_id: int,
+    *,
+    user_id: int = DEFAULT_USER_ID,
+) -> None:
     """Release the cross-process lock for ``flat_id``.
 
     No-op if no row exists (e.g. the caller never successfully acquired,
     or a stale-row sweep already reaped it). Always safe in a finally.
     """
-    conn.execute("DELETE FROM apply_locks WHERE flat_id = ?", (flat_id,))
+    conn.execute(
+        "DELETE FROM apply_locks WHERE flat_id = ? AND user_id = ?",
+        (flat_id, user_id),
+    )
 
 
 ApplyStatus = Literal["submitted", "dry_run"]
@@ -219,6 +233,7 @@ def apply_to_flat(
     screenshot_dir: Path | None = None,
     method: Literal["manual", "auto"] = "manual",
     saved_search: str | None = None,
+    user_id: int = DEFAULT_USER_ID,
 ) -> ApplyOutcome:
     profile = load_profile()
     if profile is None:
@@ -260,8 +275,9 @@ def apply_to_flat(
         )
 
     existing = conn.execute(
-        "SELECT id FROM applications WHERE flat_id = ? AND status = 'submitted' LIMIT 1",
-        (flat_id,),
+        "SELECT id FROM applications "
+        "WHERE flat_id = ? AND user_id = ? AND status = 'submitted' LIMIT 1",
+        (flat_id, user_id),
     ).fetchone()
     if existing is not None:
         raise AlreadyAppliedError(
@@ -269,7 +285,7 @@ def apply_to_flat(
             f"(application_id={existing['id']}); refusing to double-submit"
         )
 
-    acquire_apply_lock(conn, flat_id)
+    acquire_apply_lock(conn, flat_id, user_id=user_id)
     try:
         try:
             report = filler.fill(
@@ -290,6 +306,7 @@ def apply_to_flat(
                 notes=str(exc),
                 method=method,
                 saved_search=saved_search,
+                user_id=user_id,
             )
             logger.warning(
                 "apply: flat_id=%d failed: %s (application_id=%d)",
@@ -311,6 +328,7 @@ def apply_to_flat(
                 notes=None,
                 method=method,
                 saved_search=saved_search,
+                user_id=user_id,
             )
             logger.info(
                 "apply: flat_id=%d submitted (application_id=%d)",
@@ -323,7 +341,7 @@ def apply_to_flat(
                 fill_report=report,
             )
     finally:
-        release_apply_lock(conn, flat_id)
+        release_apply_lock(conn, flat_id, user_id=user_id)
 
 
 def _record_application(
@@ -337,19 +355,21 @@ def _record_application(
     notes: str | None,
     method: Literal["manual", "auto"] = "manual",
     saved_search: str | None = None,
+    user_id: int = DEFAULT_USER_ID,
 ) -> int:
     now = datetime.now(UTC).isoformat()
     cur = conn.execute(
         """
         INSERT INTO applications (
-            flat_id, platform, listing_url, title,
+            user_id, flat_id, platform, listing_url, title,
             rent_warm_eur, rooms, size_sqm, district,
             applied_at, method,
             message_sent, attachments_sent_json,
             status, notes, triggered_by_saved_search
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
+            user_id,
             flat["id"],
             flat["platform"],
             flat["listing_url"],

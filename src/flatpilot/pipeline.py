@@ -11,6 +11,7 @@ import sqlite3
 from datetime import UTC, datetime
 
 from flatpilot.profile import Profile
+from flatpilot.users import DEFAULT_USER_ID
 
 
 def run_pipeline_once(
@@ -19,6 +20,7 @@ def run_pipeline_once(
     *,
     skip_apply: bool = False,
     dry_run_apply: bool = False,
+    user_id: int = DEFAULT_USER_ID,
 ) -> int:
     """Run one scrape → match → apply → notify pass. Return number of stage failures."""
     failures = 0
@@ -32,7 +34,7 @@ def run_pipeline_once(
 
     console.rule("match")
     try:
-        run_pipeline_match(console)
+        run_pipeline_match(console, user_id=user_id)
     except Exception as exc:
         console.print(f"[red]match failed: {exc.__class__.__name__}: {exc}[/red]")
         failures += 1
@@ -40,14 +42,14 @@ def run_pipeline_once(
     if not skip_apply:
         console.rule("apply")
         try:
-            run_pipeline_apply(profile, console, dry_run=dry_run_apply)
+            run_pipeline_apply(profile, console, dry_run=dry_run_apply, user_id=user_id)
         except Exception as exc:
             console.print(f"[red]apply failed: {exc.__class__.__name__}: {exc}[/red]")
             failures += 1
 
     console.rule("notify")
     try:
-        run_pipeline_notify(profile, console)
+        run_pipeline_notify(profile, console, user_id=user_id)
     except Exception as exc:
         console.print(f"[red]notify failed: {exc.__class__.__name__}: {exc}[/red]")
         failures += 1
@@ -73,10 +75,10 @@ def run_pipeline_scrape(profile: Profile, console) -> None:
     run_scrape_pass(scrapers, profile, console)
 
 
-def run_pipeline_match(console) -> None:
+def run_pipeline_match(console, *, user_id: int = DEFAULT_USER_ID) -> None:
     from flatpilot.matcher.runner import run_match
 
-    summary = run_match()
+    summary = run_match(user_id=user_id)
     console.print(
         f"[green]{summary['match']} matched[/green], "
         f"[yellow]{summary['reject']} rejected[/yellow] "
@@ -84,19 +86,30 @@ def run_pipeline_match(console) -> None:
     )
 
 
-def run_pipeline_apply(profile: Profile, console, *, dry_run: bool = False) -> None:
+def run_pipeline_apply(
+    profile: Profile,
+    console,
+    *,
+    dry_run: bool = False,
+    user_id: int = DEFAULT_USER_ID,
+) -> None:
     from flatpilot.auto_apply import run_pipeline_apply as _impl
-    _impl(profile, console, dry_run=dry_run)
+    _impl(profile, console, dry_run=dry_run, user_id=user_id)
 
 
-def run_pipeline_notify(profile: Profile, console) -> None:
+def run_pipeline_notify(
+    profile: Profile,
+    console,
+    *,
+    user_id: int = DEFAULT_USER_ID,
+) -> None:
     from flatpilot.notifications.dispatcher import dispatch_pending, enabled_channels
 
     channels = enabled_channels(profile)
     if not channels:
         console.print("[dim]no channels enabled — skipping[/dim]")
         return
-    summary = dispatch_pending(profile)
+    summary = dispatch_pending(profile, user_id=user_id)
     if summary["processed"] == 0:
         console.print("[dim]nothing pending[/dim]")
         return

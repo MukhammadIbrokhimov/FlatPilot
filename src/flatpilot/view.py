@@ -28,6 +28,7 @@ from typing import Any
 
 from flatpilot.config import APP_DIR, ensure_dirs
 from flatpilot.database import get_conn, init_db
+from flatpilot.users import DEFAULT_USER_ID
 
 DASHBOARD_FILENAME = "dashboard.html"
 SESSION_WINDOW = timedelta(hours=24)
@@ -54,8 +55,10 @@ def generate_html(conn: sqlite3.Connection | None = None) -> str:
                f.*
         FROM matches m
         JOIN flats f ON f.id = m.flat_id
+        WHERE m.user_id = ?
         ORDER BY m.decided_at DESC
-        """
+        """,
+        (DEFAULT_USER_ID,),
     ).fetchall()
 
     matched: list[dict[str, Any]] = []
@@ -118,8 +121,10 @@ def _load_applications(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                status, response_received_at, response_text, notes,
                triggered_by_saved_search
         FROM applications
+        WHERE user_id = ?
         ORDER BY applied_at DESC
-        """
+        """,
+        (DEFAULT_USER_ID,),
     ).fetchall()
     return [dict(r) for r in rows]
 

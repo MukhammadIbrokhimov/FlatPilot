@@ -351,7 +351,26 @@ def _prompt_filter_overrides(out: Console, *, current: SavedSearch | None) -> di
 
 
 def _delete_saved_search(out: Console, profile: Profile) -> Profile:
-    raise NotImplementedError("Task 10 implements this")
+    n = len(profile.saved_searches)
+    raw = Prompt.ask(f"Which one to delete? [1-{n}]")
+    try:
+        idx = int(raw) - 1
+        if not 0 <= idx < n:
+            raise ValueError
+    except ValueError:
+        out.print("[red]Invalid selection.[/red]")
+        return profile
+    target = profile.saved_searches[idx]
+    confirm = Prompt.ask(
+        f"Delete '{target.name}'? Type the name to confirm",
+    )
+    if confirm != target.name:
+        out.print("[yellow]Aborted; nothing deleted.[/yellow]")
+        return profile
+    new_list = [
+        ss for i, ss in enumerate(profile.saved_searches) if i != idx
+    ]
+    return profile.model_copy(update={"saved_searches": new_list})
 
 
 def _edit_caps_and_cooldowns(out: Console, profile: Profile) -> Profile:

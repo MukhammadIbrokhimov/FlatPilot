@@ -335,3 +335,78 @@ def test_edit_existing(monkeypatch):
     assert ss.name == "kreuzberg-2br"
     assert ss.auto_apply is True
     assert ss.platforms == ["wg-gesucht", "kleinanzeigen"]
+
+
+def test_delete_confirms_by_name(monkeypatch):
+    profile = Profile.load_example().model_copy(update={
+        "saved_searches": [
+            SavedSearch(name="auto-default"),
+            SavedSearch(name="kreuzberg-2br"),
+        ],
+    })
+    out = _capture_console()
+
+    prompt_answers = iter(["delete", "1", "auto-default", "done"])
+    monkeypatch.setattr(
+        "flatpilot.wizard.init.Prompt.ask",
+        lambda *a, **kw: next(prompt_answers),
+    )
+    monkeypatch.setattr(
+        "flatpilot.wizard.init.Confirm.ask",
+        lambda *a, **kw: True,
+    )
+
+    result = _saved_searches_menu(out, profile)
+    names = [ss.name for ss in result.saved_searches]
+    assert names == ["kreuzberg-2br"]
+
+
+def test_delete_aborts_on_wrong_name(monkeypatch):
+    profile = Profile.load_example().model_copy(update={
+        "saved_searches": [SavedSearch(name="auto-default")],
+    })
+    out = _capture_console()
+
+    prompt_answers = iter(["delete", "1", "wrong", "done"])
+    monkeypatch.setattr(
+        "flatpilot.wizard.init.Prompt.ask",
+        lambda *a, **kw: next(prompt_answers),
+    )
+    monkeypatch.setattr(
+        "flatpilot.wizard.init.Confirm.ask",
+        lambda *a, **kw: True,
+    )
+
+    result = _saved_searches_menu(out, profile)
+    assert [ss.name for ss in result.saved_searches] == ["auto-default"]
+
+
+def test_delete_reprints_with_renumbered_indices(monkeypatch):
+    """After deleting row 1 of 3, the remaining searches reprint as 1, 2 (not 2, 3)."""
+    profile = Profile.load_example().model_copy(update={
+        "saved_searches": [
+            SavedSearch(name="alpha"),
+            SavedSearch(name="beta"),
+            SavedSearch(name="gamma"),
+        ],
+    })
+    out = _capture_console()
+
+    prompt_answers = iter(["delete", "1", "alpha", "done"])
+    monkeypatch.setattr(
+        "flatpilot.wizard.init.Prompt.ask",
+        lambda *a, **kw: next(prompt_answers),
+    )
+    monkeypatch.setattr(
+        "flatpilot.wizard.init.Confirm.ask",
+        lambda *a, **kw: True,
+    )
+
+    _saved_searches_menu(out, profile)
+    output = out.file.getvalue()
+
+    # alpha must appear exactly once (pre-delete only).
+    assert output.count("alpha") == 1
+    # beta and gamma each appear in both tables (pre + post) → twice.
+    assert output.count("beta") == 2
+    assert output.count("gamma") == 2

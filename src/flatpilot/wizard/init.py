@@ -374,7 +374,33 @@ def _delete_saved_search(out: Console, profile: Profile) -> Profile:
 
 
 def _edit_caps_and_cooldowns(out: Console, profile: Profile) -> Profile:
-    raise NotImplementedError("Task 11 implements this")
+    out.rule("Caps & cooldowns")
+    new_caps = dict(profile.auto_apply.daily_cap_per_platform)
+    new_cooldowns = dict(profile.auto_apply.cooldown_seconds_per_platform)
+    for platform in sorted(profile.auto_apply.daily_cap_per_platform.keys()):
+        out.print(f"[bold]Platform: {platform}[/bold]")
+        cap_current = new_caps.get(platform, 20)
+        cap = _prompt_optional_int(
+            out, f"  Daily cap (current {cap_current})",
+            default=str(cap_current), min_value=0,
+        )
+        if cap is not None:
+            new_caps[platform] = cap
+
+        cooldown_current = new_cooldowns.get(platform, 120)
+        cooldown = _prompt_optional_int(
+            out, f"  Cooldown seconds (current {cooldown_current})",
+            default=str(cooldown_current), min_value=0,
+        )
+        if cooldown is not None:
+            new_cooldowns[platform] = cooldown
+
+    return profile.model_copy(update={
+        "auto_apply": profile.auto_apply.model_copy(update={
+            "daily_cap_per_platform": new_caps,
+            "cooldown_seconds_per_platform": new_cooldowns,
+        })
+    })
 
 
 def run(console: Console | None = None) -> Path | None:

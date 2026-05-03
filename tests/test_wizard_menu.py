@@ -410,3 +410,35 @@ def test_delete_reprints_with_renumbered_indices(monkeypatch):
     # beta and gamma each appear in both tables (pre + post) → twice.
     assert output.count("beta") == 2
     assert output.count("gamma") == 2
+
+
+def test_caps_walks_all_platforms(monkeypatch):
+    """Platforms iterate in alphabetical order: inberlinwohnen, kleinanzeigen, wg-gesucht."""
+    profile = Profile.load_example()
+    out = _capture_console()
+
+    # Existing defaults from AutoApplySettings: 3 platforms, cap 20, cooldown 120.
+    # We change wg-gesucht's cap to 50 and cooldown to 90; keep others as default.
+    prompt_answers = iter([
+        "caps",
+        "", "",       # inberlinwohnen blank → keep current (alphabetically first)
+        "", "",       # kleinanzeigen blank → keep current
+        "50", "90",   # wg-gesucht cap=50, cooldown=90
+        "done",
+    ])
+    monkeypatch.setattr(
+        "flatpilot.wizard.init.Prompt.ask",
+        lambda *a, **kw: next(prompt_answers),
+    )
+    monkeypatch.setattr(
+        "flatpilot.wizard.init.Confirm.ask",
+        lambda *a, **kw: False,
+    )
+
+    result = _saved_searches_menu(out, profile)
+    assert result.auto_apply.daily_cap_per_platform["wg-gesucht"] == 50
+    assert result.auto_apply.cooldown_seconds_per_platform["wg-gesucht"] == 90
+    assert result.auto_apply.daily_cap_per_platform["kleinanzeigen"] == 20
+    assert result.auto_apply.cooldown_seconds_per_platform["kleinanzeigen"] == 120
+    assert result.auto_apply.daily_cap_per_platform["inberlinwohnen"] == 20
+    assert result.auto_apply.cooldown_seconds_per_platform["inberlinwohnen"] == 120

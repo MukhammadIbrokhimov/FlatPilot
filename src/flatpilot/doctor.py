@@ -155,13 +155,14 @@ def _check_saved_search_notifications() -> tuple[str, str]:
     for ss in profile.saved_searches:
         if ss.notifications is None:
             continue
+        has_override = False
         if ss.notifications.telegram is not None and ss.notifications.telegram.enabled:
-            override_count += 1
+            has_override = True
             env_name = ss.notifications.telegram.bot_token_env
             if env_name and not os.environ.get(env_name):
                 missing_env.append(f"{ss.name}.telegram.bot_token_env={env_name}")
         if ss.notifications.email is not None and ss.notifications.email.enabled:
-            override_count += 1
+            has_override = True
             prefix = ss.notifications.email.smtp_env
             if prefix:
                 # Only flag if the entire prefix's HOST is missing — caller
@@ -169,6 +170,8 @@ def _check_saved_search_notifications() -> tuple[str, str]:
                 host_var = f"{prefix}_HOST"
                 if not os.environ.get(host_var):
                     missing_env.append(f"{ss.name}.email.smtp_env={prefix} ({host_var} unset)")
+        if has_override:
+            override_count += 1
 
     if not override_count:
         return "OK", "no overrides"

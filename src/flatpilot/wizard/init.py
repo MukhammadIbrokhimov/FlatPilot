@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -24,31 +25,373 @@ from typing import Any
 from pydantic import ValidationError
 from rich.console import Console
 from rich.prompt import Confirm, IntPrompt, Prompt
+from rich.table import Table
 
 from flatpilot.config import PROFILE_PATH, ensure_dirs
 from flatpilot.matcher.distance import geocode
 from flatpilot.profile import (
     WBS,
     EmailNotification,
+    EmailNotificationOverride,
     Notifications,
     Profile,
     SavedSearch,
+    SavedSearchNotifications,
     TelegramNotification,
+    TelegramNotificationOverride,
     load_profile,
     save_profile,
 )
 
 logger = logging.getLogger(__name__)
 
+_NAME_PATTERN = re.compile(r"^[a-z0-9_-]+$")
+_PLATFORM_VALUES = {"wg-gesucht", "kleinanzeigen", "inberlinwohnen"}
 
-def _maybe_add_auto_apply(profile: Profile, *, answer: bool) -> Profile:
-    if any(ss.name == "auto-default" for ss in profile.saved_searches):
+
+
+def _saved_searches_menu(out: Console, profile: Profile) -> Profile:
+    """Drive add/edit/delete/caps interactively until user picks done.
+
+    Returns a possibly-modified Profile. Pure of side effects beyond
+    Prompt.ask / Confirm.ask interaction, so easy to test by patching
+    those.
+    """
+    while True:
+        _render_saved_searches_table(out, profile)
+        has_searches = bool(profile.saved_searches)
+        choices = ["add"]
+        if has_searches:
+            choices += ["edit", "delete"]
+        choices += ["caps", "done"]
+        action = Prompt.ask(
+            "Action", choices=choices, default="done",
+        )
+        if action == "done":
+            return profile
+        if action == "add":
+            profile = _add_saved_search(out, profile)
+        elif action == "edit":
+            profile = _edit_saved_search(out, profile)
+        elif action == "delete":
+            profile = _delete_saved_search(out, profile)
+        elif action == "caps":
+            profile = _edit_caps_and_cooldowns(out, profile)
+
+
+def _render_saved_searches_table(out: Console, profile: Profile) -> None:
+    out.rule("Saved searches & auto-apply")
+    if not profile.saved_searches:
+        out.print("[dim](no saved searches yet)[/dim]")
+        return
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("#", justify="right")
+    table.add_column("Name")
+    table.add_column("Auto-apply")
+    table.add_column("Platforms")
+    table.add_column("Notifications")
+    for i, ss in enumerate(profile.saved_searches, start=1):
+        table.add_row(
+            str(i),
+            ss.name,
+            "✓" if ss.auto_apply else "✗",
+            ", ".join(ss.platforms) if ss.platforms else "any",
+            _summarize_notifications(ss),
+        )
+    out.print(table)
+
+
+def _summarize_notifications(ss: SavedSearch) -> str:
+    if ss.notifications is None:
+        return "base"
+    parts: list[str] = []
+    if ss.notifications.telegram is not None:
+        if ss.notifications.telegram.enabled:
+            label = "telegram"
+            if (
+                ss.notifications.telegram.bot_token_env is not None
+                or ss.notifications.telegram.chat_id is not None
+            ):
+                label += " (override)"
+            parts.append(label)
+        else:
+            parts.append("telegram (off)")
+    if ss.notifications.email is not None:
+        if ss.notifications.email.enabled:
+            label = "email"
+            if ss.notifications.email.smtp_env is not None:
+                label += " (override)"
+            parts.append(label)
+        else:
+            parts.append("email (off)")
+    return " + ".join(parts) if parts else "none"
+
+
+def _add_saved_search(out: Console, profile: Profile) -> Profile:
+    new_ss = _build_saved_search(
+        out, current=None, existing_names={ss.name for ss in profile.saved_searches}
+    )
+    return profile.model_copy(update={"saved_searches": [*profile.saved_searches, new_ss]})
+
+
+def _edit_saved_search(out: Console, profile: Profile) -> Profile:
+    n = len(profile.saved_searches)
+    raw = Prompt.ask(f"Which one to edit? [1-{n}]")
+    try:
+        idx = int(raw) - 1
+        if not 0 <= idx < n:
+            raise ValueError
+    except ValueError:
+        out.print("[red]Invalid selection.[/red]")
         return profile
-    if not answer:
+    current = profile.saved_searches[idx]
+    other_names = {ss.name for i, ss in enumerate(profile.saved_searches) if i != idx}
+    updated = _build_saved_search(out, current=current, existing_names=other_names)
+    new_list = list(profile.saved_searches)
+    new_list[idx] = updated
+    return profile.model_copy(update={"saved_searches": new_list})
+
+
+def _build_saved_search(
+    out: Console,
+    *,
+    current: SavedSearch | None,
+    existing_names: set[str],
+) -> SavedSearch:
+    name = _prompt_name(out, current=current, existing_names=existing_names)
+    auto_apply_default = current.auto_apply if current else False
+    auto_apply = Confirm.ask(
+        "Auto-apply for matches against this search?", default=auto_apply_default
+    )
+    platforms = _prompt_platforms(out, current=current)
+    notifications = _prompt_notifications_override(out, current=current)
+    overlay = _prompt_filter_overrides(out, current=current)
+
+    return SavedSearch(
+        name=name,
+        auto_apply=auto_apply,
+        platforms=platforms,
+        notifications=notifications,
+        **overlay,
+    )
+
+
+def _prompt_name(out: Console, *, current: SavedSearch | None, existing_names: set[str]) -> str:
+    default = current.name if current else None
+    while True:
+        raw = Prompt.ask(
+            "Saved search name (lowercase, digits, _, -)",
+            default=default,
+        )
+        if raw is None or not _NAME_PATTERN.match(raw):
+            out.print("[red]Name must match ^[a-z0-9_-]+$[/red]")
+            continue
+        if raw in existing_names:
+            out.print(f"[red]A saved search named {raw!r} already exists.[/red]")
+            continue
+        return raw
+
+
+def _prompt_platforms(out: Console, *, current: SavedSearch | None) -> list[str]:
+    default = ", ".join(current.platforms) if current and current.platforms else ""
+    while True:
+        raw = Prompt.ask(
+            "Platforms (comma-separated; empty = all platforms)",
+            default=default,
+        )
+        if not raw.strip():
+            return []
+        items = [p.strip() for p in raw.split(",") if p.strip()]
+        unknown = [p for p in items if p not in _PLATFORM_VALUES]
+        if unknown:
+            out.print(f"[red]Unknown platform(s): {', '.join(unknown)}. "
+                      f"Valid: {sorted(_PLATFORM_VALUES)}[/red]")
+            continue
+        return items
+
+
+def _prompt_notifications_override(
+    out: Console, *, current: SavedSearch | None,
+) -> SavedSearchNotifications | None:
+    default_override = current is not None and current.notifications is not None
+    if not Confirm.ask(
+        "Override notifications for matches against this search?",
+        default=default_override,
+    ):
+        return None
+
+    out.print(
+        "[dim]For each channel you set here, this search REPLACES base profile's "
+        "setting for matches against this search alone. Set 'enabled=no' to suppress "
+        "the channel for this search.[/dim]"
+    )
+
+    telegram = _prompt_channel_override(
+        out,
+        channel="telegram",
+        current=current.notifications.telegram if current and current.notifications else None,
+        fields=(("bot_token_env", "Bot token env var"), ("chat_id", "Chat ID")),
+        builder=TelegramNotificationOverride,
+    )
+    email = _prompt_channel_override(
+        out,
+        channel="email",
+        current=current.notifications.email if current and current.notifications else None,
+        fields=(("smtp_env", "SMTP env-var prefix"),),
+        builder=EmailNotificationOverride,
+    )
+
+    if telegram is None and email is None:
+        return None
+    return SavedSearchNotifications(telegram=telegram, email=email)
+
+
+def _prompt_channel_override(
+    out: Console,
+    *,
+    channel: str,
+    current,
+    fields: tuple[tuple[str, str], ...],
+    builder,
+):
+    have_opinion_default = current is not None
+    if not Confirm.ask(
+        f"{channel}: have an opinion for this search?",
+        default=have_opinion_default,
+    ):
+        return None
+    enabled_default = current.enabled if current else True
+    enabled = Confirm.ask(f"{channel} enabled for this search?", default=enabled_default)
+    kwargs = {"enabled": enabled}
+    if enabled:
+        for field_name, prompt_label in fields:
+            current_value = getattr(current, field_name, None) if current else None
+            default = current_value or ""
+            raw = Prompt.ask(f"{prompt_label} (blank = inherit base)", default=default)
+            kwargs[field_name] = raw.strip() or None
+    return builder(**kwargs)
+
+
+def _prompt_filter_overrides(out: Console, *, current: SavedSearch | None) -> dict:
+    has_overrides = current is not None and any(
+        getattr(current, f) is not None for f in (
+            "rent_min_warm", "rent_max_warm", "rooms_min", "rooms_max",
+            "district_allowlist", "radius_km", "furnished_pref", "min_contract_months",
+        )
+    )
+    if not Confirm.ask(
+        "Customize filter overrides for this search?",
+        default=has_overrides,
+    ):
+        return {
+            "rent_min_warm": getattr(current, "rent_min_warm", None) if current else None,
+            "rent_max_warm": getattr(current, "rent_max_warm", None) if current else None,
+            "rooms_min": getattr(current, "rooms_min", None) if current else None,
+            "rooms_max": getattr(current, "rooms_max", None) if current else None,
+            "radius_km": getattr(current, "radius_km", None) if current else None,
+            "min_contract_months": (
+                getattr(current, "min_contract_months", None) if current else None
+            ),
+            "district_allowlist": getattr(current, "district_allowlist", None) if current else None,
+            "furnished_pref": getattr(current, "furnished_pref", None) if current else None,
+        }
+
+    overlay: dict = {}
+    for field, label in (
+        ("rent_min_warm", "Min warm rent (€/month, blank=inherit)"),
+        ("rent_max_warm", "Max warm rent (€/month, blank=inherit)"),
+        ("rooms_min", "Min rooms (blank=inherit)"),
+        ("rooms_max", "Max rooms (blank=inherit)"),
+        ("radius_km", "Radius km (blank=inherit)"),
+        ("min_contract_months", "Min contract months (blank=inherit)"),
+    ):
+        current_val = getattr(current, field, None) if current else None
+        default = str(current_val) if current_val is not None else ""
+        overlay[field] = _prompt_optional_int(out, label, default=default, min_value=0)
+
+    # district_allowlist: two-step override
+    current_districts = getattr(current, "district_allowlist", None) if current else None
+    if Confirm.ask(
+        "Override district allowlist for this search?",
+        default=current_districts is not None,
+    ):
+        default = ", ".join(current_districts) if current_districts else ""
+        raw = Prompt.ask(
+            "Districts (comma-separated; blank = any district)",
+            default=default,
+        )
+        overlay["district_allowlist"] = [d.strip() for d in raw.split(",") if d.strip()]
+    else:
+        overlay["district_allowlist"] = None
+
+    # furnished_pref: two-step override
+    current_furnished = getattr(current, "furnished_pref", None) if current else None
+    if Confirm.ask(
+        "Override furnished preference for this search?",
+        default=current_furnished is not None,
+    ):
+        overlay["furnished_pref"] = Prompt.ask(
+            "Furnished preference",
+            choices=["any", "furnished", "unfurnished"],
+            default=current_furnished or "any",
+        )
+    else:
+        overlay["furnished_pref"] = None
+
+    return overlay
+
+
+def _delete_saved_search(out: Console, profile: Profile) -> Profile:
+    n = len(profile.saved_searches)
+    raw = Prompt.ask(f"Which one to delete? [1-{n}]")
+    try:
+        idx = int(raw) - 1
+        if not 0 <= idx < n:
+            raise ValueError
+    except ValueError:
+        out.print("[red]Invalid selection.[/red]")
         return profile
-    new = list(profile.saved_searches)
-    new.append(SavedSearch(name="auto-default", auto_apply=True))
-    return profile.model_copy(update={"saved_searches": new})
+    target = profile.saved_searches[idx]
+    confirm = Prompt.ask(
+        f"Delete '{target.name}'? Type the name to confirm",
+    )
+    if confirm != target.name:
+        out.print("[yellow]Aborted; nothing deleted.[/yellow]")
+        return profile
+    new_list = [
+        ss for i, ss in enumerate(profile.saved_searches) if i != idx
+    ]
+    return profile.model_copy(update={"saved_searches": new_list})
+
+
+def _edit_caps_and_cooldowns(out: Console, profile: Profile) -> Profile:
+    out.rule("Caps & cooldowns")
+    new_caps = dict(profile.auto_apply.daily_cap_per_platform)
+    new_cooldowns = dict(profile.auto_apply.cooldown_seconds_per_platform)
+    for platform in sorted(profile.auto_apply.daily_cap_per_platform.keys()):
+        out.print(f"[bold]Platform: {platform}[/bold]")
+        cap_current = new_caps.get(platform, 20)
+        cap = _prompt_optional_int(
+            out, f"  Daily cap (current {cap_current})",
+            default=str(cap_current), min_value=0,
+        )
+        if cap is not None:
+            new_caps[platform] = cap
+
+        cooldown_current = new_cooldowns.get(platform, 120)
+        cooldown = _prompt_optional_int(
+            out, f"  Cooldown seconds (current {cooldown_current})",
+            default=str(cooldown_current), min_value=0,
+        )
+        if cooldown is not None:
+            new_cooldowns[platform] = cooldown
+
+    return profile.model_copy(update={
+        "auto_apply": profile.auto_apply.model_copy(update={
+            "daily_cap_per_platform": new_caps,
+            "cooldown_seconds_per_platform": new_cooldowns,
+        })
+    })
 
 
 def run(console: Console | None = None) -> Path | None:
@@ -176,14 +519,7 @@ def run(console: Console | None = None) -> Path | None:
         out.print(str(exc))
         raise
 
-    out.rule("Auto-apply (Phase 4)")
-    if not any(ss.name == "auto-default" for ss in profile.saved_searches):
-        enable = Confirm.ask(
-            "Enable auto-apply with a starter saved search? "
-            "(Use `flatpilot pause` to disable temporarily.)",
-            default=False,
-        )
-        profile = _maybe_add_auto_apply(profile, answer=enable)
+    profile = _saved_searches_menu(out, profile)
 
     out.print(
         f"[bold]{profile.city}[/bold] · {profile.radius_km} km · "

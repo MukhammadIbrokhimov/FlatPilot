@@ -40,6 +40,134 @@ _SYNTHETIC_FLAT: dict[str, Any] = {
 }
 
 
+# Per-match channel resolution under semantic A″ (per-channel replace).
+# See docs/superpowers/specs/2026-05-02-saved-searches-power-user-design.md §4.
+#
+# Output tuple shape: (channel, signature, transport_kwargs).
+# - channel: "telegram" or "email"
+# - signature: canonicalized string used as the dedup key in
+#   notified_channels_json. Always "<channel>:base" when the resolved
+#   transport equals base profile's transport for every field.
+# - transport_kwargs: dict passed to the adapter's send(); keys are
+#   override fields that differ from base. Empty dict when signature is
+#   "<channel>:base" — signals "no override needed."
+
+_TELEGRAM_FIELDS = ("bot_token_env", "chat_id")
+_EMAIL_FIELDS = ("smtp_env",)
+
+# Explicit signature-prefix mapping. Avoids the fragility of deriving prefixes
+# from field names by string splitting — adding a new field that happens to
+# share a prefix would silently collide otherwise.
+_FIELD_SIGNATURE_PREFIX: dict[str, str] = {
+    "bot_token_env": "bot",
+    "chat_id": "chat",
+    "smtp_env": "smtp",
+}
+
+
+def _resolve_channel(
+    *,
+    channel: str,
+    fields: tuple[str, ...],
+    base_cfg: Any,
+    overrides: list[Any],
+) -> list[tuple[str, str, dict[str, str]]]:
+    """Resolve one channel for one match row. Pure function.
+
+    ``base_cfg`` is the corresponding ``profile.notifications.<channel>``
+    block (e.g. ``profile.notifications.telegram``). ``overrides`` is the
+    ordered list of non-None per-search override blocks for this channel
+    (from definers in the matched-search list).
+
+    Returns 0+ (channel, signature, transport_kwargs) tuples, deduped by
+    canonicalized signature.
+    """
+    if not overrides:
+        # No definers for this channel → base fires if enabled.
+        if base_cfg.enabled:
+            return [(channel, f"{channel}:base", {})]
+        return []
+
+    # Definers replace base. Filter to enabled=True overrides.
+    enabled_overrides = [o for o in overrides if o.enabled]
+    if not enabled_overrides:
+        # All definers actively suppressed the channel.
+        return []
+
+    seen: dict[str, tuple[str, str, dict[str, str]]] = {}
+    for override in enabled_overrides:
+        kwargs: dict[str, str] = {}
+        differs_from_base = False
+        for field in fields:
+            override_value = getattr(override, field)
+            base_value = getattr(base_cfg, field)
+            resolved = override_value if override_value is not None else base_value
+            kwargs[field] = resolved
+            if resolved != base_value:
+                differs_from_base = True
+
+        if not differs_from_base:
+            signature = f"{channel}:base"
+            transport_kwargs: dict[str, str] = {}
+        else:
+            signature = f"{channel}:" + ",".join(
+                f"{_FIELD_SIGNATURE_PREFIX[field]}={kwargs[field]}"
+                for field in fields
+                if kwargs[field] != getattr(base_cfg, field)
+            )
+            # transport_kwargs threads through ALL resolved values so the
+            # adapter doesn't have to consult the profile for the fields
+            # the dispatcher already resolved.
+            transport_kwargs = dict(kwargs)
+
+        seen[signature] = (channel, signature, transport_kwargs)
+
+    return list(seen.values())
+
+
+def _resolve_channels_for_match(
+    profile: Profile,
+    matched_names: list[str],
+) -> list[tuple[str, str, dict[str, str]]]:
+    """Top-level per-match channel resolver.
+
+    Walks ``matched_names``, accumulates per-channel override blocks from
+    saved searches that have notifications definers, and dispatches to
+    ``_resolve_channel`` for each channel. Stale names (not in profile) are
+    logged at debug and skipped. Returns the union of per-channel resolutions.
+    """
+    saved_by_name = {ss.name: ss for ss in profile.saved_searches}
+
+    telegram_overrides = []
+    email_overrides = []
+    for name in matched_names:
+        ss = saved_by_name.get(name)
+        if ss is None:
+            logger.debug("dispatch: matched-search name %r not in profile (stale row)", name)
+            continue
+        if ss.notifications is None:
+            continue
+        if ss.notifications.telegram is not None:
+            telegram_overrides.append(ss.notifications.telegram)
+        if ss.notifications.email is not None:
+            email_overrides.append(ss.notifications.email)
+
+    out: list[tuple[str, str, dict[str, str]]] = []
+    out.extend(_resolve_channel(
+        channel="telegram",
+        fields=_TELEGRAM_FIELDS,
+        base_cfg=profile.notifications.telegram,
+        overrides=telegram_overrides,
+    ))
+    out.extend(_resolve_channel(
+        channel="email",
+        fields=_EMAIL_FIELDS,
+        base_cfg=profile.notifications.email,
+        overrides=email_overrides,
+    ))
+    return out
+
+
 class DispatchSummary(TypedDict):
     processed: int
     sent: dict[str, int]
@@ -55,17 +183,34 @@ def enabled_channels(profile: Profile) -> list[str]:
     return channels
 
 
-def _parse_channels(raw: str | None) -> set[str]:
+def _parse_signatures(raw: str | None) -> set[str]:
+    """Parse notified_channels_json with legacy bare-name compat.
+
+    Bare channel names (legacy format pre-2026-05) are upgraded to
+    '<channel>:base' signatures so dedup against new pending dispatches
+    works correctly.
+    """
     if not raw:
         return set()
     try:
-        return set(json.loads(raw))
+        items = json.loads(raw)
     except (TypeError, json.JSONDecodeError):
         return set()
+    out: set[str] = set()
+    for item in items:
+        if not isinstance(item, str):
+            continue
+        if ":" in item:
+            out.add(item)  # already in signature format
+        else:
+            out.add(f"{item}:base")  # upgrade bare name
+    return out
 
 
-def _email_recipient() -> str | None:
-    return os.environ.get("EMAIL_TO") or os.environ.get("SMTP_FROM")
+def _email_recipient(smtp_env: str | None = None) -> str | None:
+    """``EMAIL_TO`` is a global override; otherwise resolve <prefix>_FROM."""
+    prefix = smtp_env if smtp_env is not None else "SMTP"
+    return os.environ.get("EMAIL_TO") or os.environ.get(f"{prefix}_FROM")
 
 
 def _subject_for(flat: dict[str, Any]) -> str:
@@ -73,18 +218,32 @@ def _subject_for(flat: dict[str, Any]) -> str:
     return f"FlatPilot: {title}"
 
 
-def _send(channel: str, flat: dict[str, Any], profile: Profile) -> None:
+def _send(
+    channel: str,
+    flat: dict[str, Any],
+    profile: Profile,
+    **transport_kwargs: Any,
+) -> None:
     if channel == "telegram":
-        telegram_adapter.send(profile, template.render_html(flat), parse_mode="HTML")
+        telegram_adapter.send(
+            profile,
+            template.render_html(flat),
+            parse_mode="HTML",
+            **transport_kwargs,
+        )
     elif channel == "email":
-        recipient = _email_recipient()
+        smtp_env = transport_kwargs.get("smtp_env")
+        recipient = _email_recipient(smtp_env=smtp_env)
         if not recipient:
-            raise email_adapter.EmailError("no recipient — set EMAIL_TO or SMTP_FROM")
+            raise email_adapter.EmailError(
+                f"no recipient — set EMAIL_TO or {(smtp_env or 'SMTP')}_FROM"
+            )
         email_adapter.send(
             recipient,
             _subject_for(flat),
             template.render_plain(flat),
             template.render_html(flat),
+            smtp_env=smtp_env,
         )
     else:
         raise ValueError(f"unknown channel: {channel!r}")
@@ -117,8 +276,14 @@ def _mark_stale_matches_notified(conn: sqlite3.Connection, current_hash: str) ->
 
 
 def dispatch_pending(profile: Profile) -> DispatchSummary:
-    channels = enabled_channels(profile)
-    if not channels:
+    # Early-out only if NEITHER base nor any saved search could ever fire.
+    base_has_channel = (
+        profile.notifications.telegram.enabled or profile.notifications.email.enabled
+    )
+    any_search_has_notifications = any(
+        ss.notifications is not None for ss in profile.saved_searches
+    )
+    if not base_has_channel and not any_search_has_notifications:
         logger.info("no channels enabled in profile; nothing to send")
         return {"processed": 0, "sent": {}, "failed": {}}
 
@@ -136,6 +301,7 @@ def dispatch_pending(profile: Profile) -> DispatchSummary:
         """
         SELECT m.id AS match_id,
                m.notified_channels_json,
+               m.matched_saved_searches_json,
                COALESCE(f.canonical_flat_id, f.id) AS canonical_id,
                f.*
         FROM matches m
@@ -150,7 +316,7 @@ def dispatch_pending(profile: Profile) -> DispatchSummary:
     # cluster. Earned by two scenarios the matcher's root-only filter
     # can't cover: legacy match rows written before PR #21, and any
     # row churn from a future `dedup --rebuild` that re-clusters already
-    # matched flats. For each (canonical_id, channel), we send at most
+    # matched flats. For each (canonical_id, signature), we send at most
     # once per run; this inheritance is in-memory only, so if a
     # canonical's match row is later deleted (e.g. the root flat
     # is delisted, cascading ON DELETE), a surviving sibling becomes
@@ -165,23 +331,33 @@ def dispatch_pending(profile: Profile) -> DispatchSummary:
         flat = dict(row)
         match_id = flat.pop("match_id")
         canonical_id = flat.pop("canonical_id")
-        notified = _parse_channels(flat.pop("notified_channels_json", None))
+        matched_names_raw = flat.pop("matched_saved_searches_json", "[]") or "[]"
+        try:
+            matched_names = json.loads(matched_names_raw)
+        except (TypeError, json.JSONDecodeError):
+            matched_names = []
+        notified = _parse_signatures(flat.pop("notified_channels_json", None))
         already_for_canonical = sent_canonicals.setdefault(canonical_id, set())
+
+        resolved = _resolve_channels_for_match(profile, matched_names)
         effective = notified | already_for_canonical
-        pending = [c for c in channels if c not in effective]
+        pending = [t for t in resolved if t[1] not in effective]
         if not pending:
             continue
 
         processed += 1
-        for channel in pending:
+        for channel, signature, transport_kwargs in pending:
             try:
-                _send(channel, flat, profile)
+                _send(channel, flat, profile, **transport_kwargs)
             except (telegram_adapter.TelegramError, email_adapter.EmailError) as exc:
-                logger.warning("match %d channel %s failed: %s", match_id, channel, exc)
+                logger.warning(
+                    "match %d channel %s (%s) failed: %s",
+                    match_id, channel, signature, exc,
+                )
                 failed[channel] = failed.get(channel, 0) + 1
                 continue
-            notified.add(channel)
-            already_for_canonical.add(channel)
+            notified.add(signature)
+            already_for_canonical.add(signature)
             sent[channel] = sent.get(channel, 0) + 1
 
         if notified:

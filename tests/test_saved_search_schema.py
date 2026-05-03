@@ -3,7 +3,13 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from flatpilot.profile import Profile, SavedSearch
+from flatpilot.profile import (
+    EmailNotificationOverride,
+    Profile,
+    SavedSearch,
+    SavedSearchNotifications,
+    TelegramNotificationOverride,
+)
 
 
 def test_minimal_saved_search_loads():
@@ -103,3 +109,70 @@ def test_example_profile_demonstrates_auto_apply_shape():
     p = Profile.load_example()
     assert "wg-gesucht" in p.auto_apply.daily_cap_per_platform
     assert isinstance(p.saved_searches, list)
+
+
+def test_saved_search_notifications_default_none():
+    ss = SavedSearch(name="x")
+    assert ss.notifications is None
+
+
+def test_saved_search_notifications_round_trip_none():
+    ss = SavedSearch(name="x", notifications=None)
+    payload = ss.model_dump_json()
+    restored = SavedSearch.model_validate_json(payload)
+    assert restored.notifications is None
+
+
+def test_telegram_override_field_defaults():
+    o = TelegramNotificationOverride(enabled=True)
+    assert o.enabled is True
+    assert o.bot_token_env is None
+    assert o.chat_id is None
+
+
+def test_email_override_field_defaults():
+    o = EmailNotificationOverride(enabled=True)
+    assert o.enabled is True
+    assert o.smtp_env is None
+
+
+def test_telegram_override_round_trip_preserves_none():
+    o = TelegramNotificationOverride(enabled=True, bot_token_env=None, chat_id=None)
+    restored = TelegramNotificationOverride.model_validate_json(o.model_dump_json())
+    assert restored.bot_token_env is None
+    assert restored.chat_id is None
+
+
+def test_saved_search_notifications_extra_forbid():
+    with pytest.raises(ValidationError):
+        SavedSearchNotifications(unknown_channel={"enabled": True})
+
+
+def test_telegram_override_extra_forbid():
+    with pytest.raises(ValidationError):
+        TelegramNotificationOverride(enabled=True, unknown_field="x")
+
+
+def test_saved_search_with_full_notifications():
+    ss = SavedSearch(
+        name="kreuzberg-2br",
+        notifications=SavedSearchNotifications(
+            telegram=TelegramNotificationOverride(enabled=True, chat_id="k_chat"),
+            email=EmailNotificationOverride(enabled=False),
+        ),
+    )
+    assert ss.notifications.telegram.chat_id == "k_chat"
+    assert ss.notifications.email.enabled is False
+
+
+def test_saved_search_explicit_silence_is_valid():
+    """Both channels enabled=False is structurally valid (per-search opt-out)."""
+    ss = SavedSearch(
+        name="x",
+        notifications=SavedSearchNotifications(
+            telegram=TelegramNotificationOverride(enabled=False),
+            email=EmailNotificationOverride(enabled=False),
+        ),
+    )
+    assert ss.notifications.telegram.enabled is False
+    assert ss.notifications.email.enabled is False

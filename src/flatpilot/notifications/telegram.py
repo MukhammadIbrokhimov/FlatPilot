@@ -33,21 +33,26 @@ def send(
     *,
     parse_mode: str = "HTML",
     disable_web_page_preview: bool = False,
+    bot_token_env: str | None = None,
+    chat_id: str | None = None,
 ) -> None:
     tg = profile.notifications.telegram
     if not tg.enabled:
         logger.debug("Telegram notifications disabled in profile; skipping send")
         return
 
-    token = os.environ.get(tg.bot_token_env)
+    resolved_token_env = bot_token_env if bot_token_env is not None else tg.bot_token_env
+    resolved_chat_id = chat_id if chat_id is not None else tg.chat_id
+
+    token = os.environ.get(resolved_token_env)
     if not token:
-        raise TelegramError(f"bot token not found in env var {tg.bot_token_env!r}")
-    if not tg.chat_id:
-        raise TelegramError("chat_id not configured in profile.notifications.telegram")
+        raise TelegramError(f"bot token not found in env var {resolved_token_env!r}")
+    if not resolved_chat_id:
+        raise TelegramError("chat_id not configured (override or base both empty)")
 
     url = f"{API_BASE}/bot{token}/sendMessage"
     payload = {
-        "chat_id": tg.chat_id,
+        "chat_id": resolved_chat_id,
         "text": text,
         "parse_mode": parse_mode,
         "disable_web_page_preview": disable_web_page_preview,
@@ -65,4 +70,4 @@ def send(
             f"Telegram API returned ok=false: {body.get('description', 'unknown error')}"
         )
 
-    logger.info("Telegram message delivered to chat %s", tg.chat_id)
+    logger.info("Telegram message delivered to chat %s", resolved_chat_id)

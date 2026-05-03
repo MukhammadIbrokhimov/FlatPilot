@@ -137,7 +137,9 @@ def _summarize_notifications(ss: SavedSearch) -> str:
 
 
 def _add_saved_search(out: Console, profile: Profile) -> Profile:
-    new_ss = _build_saved_search(out, current=None, existing_names={ss.name for ss in profile.saved_searches})
+    new_ss = _build_saved_search(
+        out, current=None, existing_names={ss.name for ss in profile.saved_searches}
+    )
     return profile.model_copy(update={"saved_searches": [*profile.saved_searches, new_ss]})
 
 
@@ -167,7 +169,9 @@ def _build_saved_search(
 ) -> SavedSearch:
     name = _prompt_name(out, current=current, existing_names=existing_names)
     auto_apply_default = current.auto_apply if current else False
-    auto_apply = Confirm.ask("Auto-apply for matches against this search?", default=auto_apply_default)
+    auto_apply = Confirm.ask(
+        "Auto-apply for matches against this search?", default=auto_apply_default
+    )
     platforms = _prompt_platforms(out, current=current)
     notifications = _prompt_notifications_override(out, current=current)
     overlay = _prompt_filter_overrides(out, current=current)
@@ -294,7 +298,9 @@ def _prompt_filter_overrides(out: Console, *, current: SavedSearch | None) -> di
             "rooms_min": getattr(current, "rooms_min", None) if current else None,
             "rooms_max": getattr(current, "rooms_max", None) if current else None,
             "radius_km": getattr(current, "radius_km", None) if current else None,
-            "min_contract_months": getattr(current, "min_contract_months", None) if current else None,
+            "min_contract_months": (
+                getattr(current, "min_contract_months", None) if current else None
+            ),
             "district_allowlist": getattr(current, "district_allowlist", None) if current else None,
             "furnished_pref": getattr(current, "furnished_pref", None) if current else None,
         }

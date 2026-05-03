@@ -73,12 +73,14 @@ def test_menu_empty_state_omits_edit_delete_choices(monkeypatch):
 
 
 def test_add_minimal_saved_search(monkeypatch):
-    """Add flow with no overrides: 4 prompts (name, auto-apply, platforms, override-notif=no), then customize-filters=no."""
+    """Add flow with no overrides: 4 prompts (name, auto-apply, platforms, override-notif=no),
+    then customize-filters=no."""
     profile = Profile.load_example()
     out = _capture_console()
 
     prompt_answers = iter(["add", "kreuzberg-2br", "wg-gesucht", "done"])
-    confirm_answers = iter([True, False, False])  # auto-apply=True, override notif=No, customize filters=No
+    # auto-apply=True, override notif=No, customize filters=No
+    confirm_answers = iter([True, False, False])
 
     monkeypatch.setattr(
         "flatpilot.wizard.init.Prompt.ask",
@@ -301,7 +303,9 @@ def test_add_invalid_name_reprompts(monkeypatch):
 def test_edit_existing(monkeypatch):
     """Edit branch loads defaults from the existing search."""
     profile = Profile.load_example().model_copy(update={
-        "saved_searches": [SavedSearch(name="kreuzberg-2br", auto_apply=False, platforms=["wg-gesucht"])]
+        "saved_searches": [
+            SavedSearch(name="kreuzberg-2br", auto_apply=False, platforms=["wg-gesucht"])
+        ]
     })
     out = _capture_console()
 

@@ -55,6 +55,15 @@ _SYNTHETIC_FLAT: dict[str, Any] = {
 _TELEGRAM_FIELDS = ("bot_token_env", "chat_id")
 _EMAIL_FIELDS = ("smtp_env",)
 
+# Explicit signature-prefix mapping. Avoids the fragility of deriving prefixes
+# from field names by string splitting — adding a new field that happens to
+# share a prefix would silently collide otherwise.
+_FIELD_SIGNATURE_PREFIX: dict[str, str] = {
+    "bot_token_env": "bot",
+    "chat_id": "chat",
+    "smtp_env": "smtp",
+}
+
 
 def _resolve_channel(
     *,
@@ -102,7 +111,7 @@ def _resolve_channel(
             transport_kwargs: dict[str, str] = {}
         else:
             signature = f"{channel}:" + ",".join(
-                f"{field.split('_')[0]}={kwargs[field]}"
+                f"{_FIELD_SIGNATURE_PREFIX[field]}={kwargs[field]}"
                 for field in fields
                 if kwargs[field] != getattr(base_cfg, field)
             )
@@ -120,7 +129,13 @@ def _resolve_channels_for_match(
     profile: Profile,
     matched_names: list[str],
 ) -> list[tuple[str, str, dict[str, str]]]:
-    """Top-level per-match resolver. See module-level docstring."""
+    """Top-level per-match channel resolver.
+
+    Walks ``matched_names``, accumulates per-channel override blocks from
+    saved searches that have notifications definers, and dispatches to
+    ``_resolve_channel`` for each channel. Stale names (not in profile) are
+    logged at debug and skipped. Returns the union of per-channel resolutions.
+    """
     saved_by_name = {ss.name: ss for ss in profile.saved_searches}
 
     telegram_overrides = []

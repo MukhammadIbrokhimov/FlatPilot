@@ -183,7 +183,7 @@ def _prompt_name(out: Console, *, current: SavedSearch | None, existing_names: s
             "Saved search name (lowercase, digits, _, -)",
             default=default,
         )
-        if not _NAME_PATTERN.match(raw):
+        if raw is None or not _NAME_PATTERN.match(raw):
             out.print("[red]Name must match ^[a-z0-9_-]+$[/red]")
             continue
         if raw in existing_names:

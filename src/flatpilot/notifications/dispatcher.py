@@ -222,7 +222,7 @@ def _send(
     channel: str,
     flat: dict[str, Any],
     profile: Profile,
-    **transport_kwargs: str,
+    **transport_kwargs: Any,
 ) -> None:
     if channel == "telegram":
         telegram_adapter.send(

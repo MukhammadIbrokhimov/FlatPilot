@@ -16,7 +16,9 @@ class _FakeResponse:
         return self._payload
 
 
-def _enable_telegram(profile: Profile, *, bot_token_env="TELEGRAM_BOT_TOKEN", chat_id="111") -> Profile:
+def _enable_telegram(
+    profile: Profile, *, bot_token_env="TELEGRAM_BOT_TOKEN", chat_id="111",
+) -> Profile:
     return profile.model_copy(
         update={
             "notifications": profile.notifications.model_copy(

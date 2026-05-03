@@ -74,6 +74,8 @@ flatpilot dashboard                   # open HTML dashboard of matches
 flatpilot status                      # DB counts and last-run info
 ```
 
+**After editing saved searches:** run `flatpilot run` (which re-matches before notifying), not `flatpilot notify` standalone. Profile edits rotate the internal hash that scopes pending matches; running `flatpilot notify` directly after an edit will silently drop queued notifications. `flatpilot run` re-creates the match rows under the new hash automatically.
+
 ## Scraping behaviour
 
 - **inberlinwohnen.de** paginates from page 1 onwards. On a fresh install, `flatpilot scrape --platform inberlinwohnen` walks the full Wohnungsfinder feed (~22 pages, ~220 listings today) so you don't miss older inventory. In steady state, the scraper stops after page 1 once every listing on it is already in the local DB — typically one page-fetch per pass. A safety cap of 30 pages bounds the worst case.

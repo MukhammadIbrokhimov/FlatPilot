@@ -78,3 +78,6 @@ out/
 
 # Perles (beads web UI) — per-machine config
 .perles/
+
+# Git worktrees (per-developer; never committed)
+.worktrees/

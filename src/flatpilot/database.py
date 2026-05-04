@@ -21,6 +21,11 @@ SCHEMAS: dict[str, str] = {}
 # missing from the live table is added via ALTER TABLE on the next init.
 COLUMNS: dict[str, dict[str, str]] = {}
 
+# table_name -> {column_name: backfill_sql} — SQL run immediately after an
+# ALTER TABLE ADD COLUMN to populate the new column on pre-existing rows.
+# Only executed when the column was actually absent (i.e. first-ever migration).
+COLUMN_BACKFILLS: dict[str, dict[str, str]] = {}
+
 
 _local = threading.local()
 
@@ -191,11 +196,25 @@ def init_db() -> None:
             conn.execute(create_sql)
     ensure_default_user(conn)
     _rebuild_user_scoped_tables(conn)
-    # Second pass: indexes (tables now have user_id, so index creation succeeds).
+    # Column migrations before index pass so new columns exist when indexes are built.
+    ensure_columns()
+    # Second pass: indexes (tables now have all columns, so index creation succeeds).
     for name, create_sql in SCHEMAS.items():
         if name.startswith("idx_"):
             conn.execute(create_sql)
-    ensure_columns()
+    _cleanup_expired_magic_link_tokens(conn)
+
+
+def _cleanup_expired_magic_link_tokens(conn: sqlite3.Connection) -> None:
+    """Drop magic-link rows whose expires_at is more than 1 day in the past.
+
+    Called from init_db on every server startup. Bounds memory cheaply; the
+    table never grows past a few hundred rows on a hobbyist deploy.
+    """
+    conn.execute(
+        "DELETE FROM magic_link_tokens WHERE expires_at < datetime('now', '-1 day')"
+    )
+    conn.commit()
 
 
 def ensure_columns() -> None:
@@ -205,3 +224,6 @@ def ensure_columns() -> None:
         for col_name, col_def in cols.items():
             if col_name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}")
+                backfill_sql = COLUMN_BACKFILLS.get(table, {}).get(col_name)
+                if backfill_sql:
+                    conn.execute(backfill_sql)

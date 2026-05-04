@@ -13,17 +13,31 @@ SQLite quirks worth remembering:
 
 from __future__ import annotations
 
-from flatpilot.database import SCHEMAS
+from flatpilot.database import COLUMN_BACKFILLS, COLUMNS, SCHEMAS
 
 USERS_CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT UNIQUE,
+    email_normalized TEXT,
     created_at TEXT NOT NULL
 )
 """
 
+USERS_EMAIL_NORMALIZED_INDEX_SQL = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_normalized
+    ON users(email_normalized) WHERE email_normalized IS NOT NULL
+"""
+
 SCHEMAS["users"] = USERS_CREATE_SQL
+SCHEMAS["idx_users_email_normalized"] = USERS_EMAIL_NORMALIZED_INDEX_SQL
+
+# Upgrade path: existing installs built before Bundle-B lack email_normalized.
+COLUMNS.setdefault("users", {})["email_normalized"] = "TEXT"
+COLUMN_BACKFILLS.setdefault("users", {})["email_normalized"] = (
+    "UPDATE users SET email_normalized = LOWER(TRIM(email))"
+    " WHERE email IS NOT NULL AND email_normalized IS NULL"
+)
 
 FLATS_CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS flats (
@@ -154,3 +168,21 @@ CREATE INDEX IF NOT EXISTS idx_applications_user_applied
 """
 
 SCHEMAS["idx_applications_user_applied"] = APPLICATIONS_USER_APPLIED_INDEX_SQL
+
+MAGIC_LINK_TOKENS_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS magic_link_tokens (
+    jti TEXT PRIMARY KEY NOT NULL,
+    email TEXT NOT NULL,
+    issued_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT
+)
+"""
+
+MAGIC_LINK_TOKENS_EXPIRES_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_magic_link_tokens_expires
+    ON magic_link_tokens(expires_at)
+"""
+
+SCHEMAS["magic_link_tokens"] = MAGIC_LINK_TOKENS_CREATE_SQL
+SCHEMAS["idx_magic_link_tokens_expires"] = MAGIC_LINK_TOKENS_EXPIRES_INDEX_SQL

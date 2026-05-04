@@ -67,7 +67,23 @@ This PR does **not** make the Web UI self-sufficient for users who never touch t
 
 ### 2.3 Estimated size
 
-~2.5–3.5k LOC of net new code (~1.5k Python including tests, ~1k TypeScript, plus generated shadcn components). Reviewable as one PR, at the upper end of comfortable.
+~3.5–5k LOC of net new code, broken down approximately:
+
+| Surface | LOC |
+|---|---|
+| FastAPI server (`server/app.py`, `deps.py`, `auth.py`, `email_links.py`, route modules, Pydantic schemas) | ~700 |
+| Login engine refactor (`sessions/login_engine.py`, `platforms.py`, `paths.py`) | ~300 |
+| CLI additions (`set-email`, wizard hook, doctor row) | ~150 |
+| Backend tests (the ~30 tests in §8.1) | ~700 |
+| Next.js scaffolding (`package.json`, `next.config.js`, `tailwind.config.ts`, `middleware.ts`, layouts) | ~250 |
+| shadcn/ui components (checked in, not a runtime dep) | ~500 |
+| Feature components (`MatchCard`, `ApplicationRow`, `ResponseForm`, `ConnectionRow`, hooks, API client) | ~700 |
+| Pages (`/login`, `/verify`, `/`, `/connections`) | ~400 |
+| e2e smoke + SMTP stub fixture | ~200 |
+| Schema migration / database touches | ~100 |
+| Docs (README updates, ADR 0002) | ~100 |
+
+Reviewable as one PR but at the upper end. If the first implementation pass produces something materially over 5k LOC, splitting becomes worth a discussion before merging.
 
 ## 3. Architecture
 
@@ -140,14 +156,22 @@ Sessions are stateless signed cookies. Revocation in this PR = "wait for the coo
 3. Headed Chromium window opens on the host machine (= the user's laptop, local-only).
    User logs in inside that window.
 4. User clicks Done in the modal → POST /api/connections/<platform>/done
-5. FastAPI: event = _pending.get(key); if None: 404; event.set(); respond 204
-6. login_engine, awaiting completion_signal:
-   - Inspects context.cookies() against PLATFORMS[platform].is_authenticated
+5. FastAPI handler:
+   - lookup _pending[(user_id, platform)]; 404 if absent
+   - event.set()
+   - await the runner task with a 30s timeout
+   - the runner returns LoginResult (SAVED / ABANDONED / TIMED_OUT / CANCELLED)
+   - respond 200 {"result": "saved" | "abandoned" | "timed_out"}
+6. login_engine, woken by event.set(), inspects context.cookies():
    - If authenticated: context.storage_state(path=storage_state_path) → returns SAVED
    - If not:                                                          → returns ABANDONED
-7. /connections page polls GET /api/connections every 2s; once row.status flips
-   to "connected", modal closes, toast confirms.
+7. UI receives a definitive verdict in the /done response body. Modal closes;
+   toast renders confirmation (saved) or error ("Login wasn't completed — try
+   again, and make sure you see your dashboard before clicking Done."). No
+   post-Done polling — the answer is synchronous.
 ```
+
+`GET /api/connections` polling is used only on the *initial* page load and to refresh stale rows; it is no longer the channel for "did Done succeed?". This eliminates the race where the file-on-disk lags the registry pop and the UI can't tell SAVED from ABANDONED.
 
 The `_pending: dict[(int, str), asyncio.Event]` is in-process state. Single-worker uvicorn only. Multi-worker support is `FlatPilot-28o`.
 
@@ -170,7 +194,19 @@ async def list_matches(user: User = Depends(get_current_user)) -> MatchesOut:
 
 `get_current_user` is the only place `user_id` enters; every query parameter-binds it. The static SQL audit (test `test_no_unscoped_sql_in_routes_module`) makes this a runnable invariant.
 
-### 3.5 File layout
+### 3.5 CSRF posture
+
+This PR does not add CSRF tokens. Mitigation rests on three properties that must hold together:
+
+1. **`SameSite=Lax` on `fp_session`.** Cross-site forms cannot submit POST requests carrying the cookie. Browsers refuse to attach `Lax` cookies to cross-site state-changing requests.
+2. **No `GET` endpoints mutate state.** Every endpoint that touches the database is `POST` / `DELETE`. CSRF via `<img src=…>` or link prefetchers cannot trigger writes.
+3. **`/verify` is a SPA page that POSTs the token from the browser, not a server-side GET handler that consumes it.** This is **load-bearing**: corporate email scanners and link prefetchers (Outlook, Mimecast, etc.) follow GETs on every link in incoming mail. If `/verify` consumed tokens via GET, those scanners would burn the token before the user clicked, breaking single-use silently. The Next.js page at `/verify` only renders; on mount, the in-browser script does `POST /api/auth/verify {token}`. The FastAPI server has no GET handler at `/api/auth/verify`.
+
+Acceptance criterion: a `GET` to `/api/auth/verify` returns 405 (Method Not Allowed). A `POST` is the only path that consumes tokens.
+
+If any of these three properties is broken in a future PR (e.g. someone adds a GET handler "for convenience"), the CSRF guarantees collapse. The relevant tests assert all three.
+
+### 3.6 File layout
 
 ```
 src/flatpilot/server/
@@ -229,13 +265,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_normalized
     ON users(email_normalized) WHERE email_normalized IS NOT NULL;
 ```
 
-`ALTER`-able (no `REFERENCES`, no `NOT NULL DEFAULT`) so no rebuild dance. The partial unique index allows multiple `NULL`s and enforces uniqueness on real emails. `email_normalized` = `LOWER(TRIM(email))`. Every write path sets both columns; every lookup uses `email_normalized`.
+`ALTER`-able (no `REFERENCES`, no `NOT NULL DEFAULT`) so no rebuild dance. The partial unique index allows multiple `NULL`s and enforces uniqueness on real emails. `email_normalized` = `LOWER(TRIM(email))` computed in Python (Unicode-aware) before every write — never via SQLite's `LOWER()`, which is byte-level. Every write path sets both columns; every lookup uses `email_normalized`.
 
 **Backfill on `init_db`** (idempotent):
 ```sql
 UPDATE users SET email_normalized = LOWER(TRIM(email))
 WHERE email IS NOT NULL AND email_normalized IS NULL
 ```
+
+**Dual UNIQUE constraint behavior (intentional).** The foundations PR shipped `email TEXT UNIQUE`. Bundle B keeps that constraint and adds the partial unique index on `email_normalized`. Both stay in place. SQLite's `email UNIQUE` is byte-level, so `Foo@x.com` and `foo@x.com` are distinct to it; the partial unique index on `email_normalized` is strictly stricter, so it always blocks first or simultaneously. Concretely:
+
+| Existing row | Insert attempt | Blocked by |
+|---|---|---|
+| `email='foo@x.com'` | `email='Foo@x.com'` | `email_normalized` (both normalize to `foo@x.com`) |
+| `email='foo@x.com'` | `email='foo@x.com'` | both fire; `email_normalized` semantically primary |
+| `email='Foo@x.com'` | `email='bar@x.com'` | neither (different emails); insert succeeds |
+
+`email UNIQUE` is therefore a redundant defense — kept because dropping it would require another foundations-style table rebuild for zero behavioral gain. Tests cover both constraints firing on conflicting inserts.
 
 ### 4.2 New table `magic_link_tokens`
 
@@ -257,12 +303,16 @@ One row per `/api/auth/request`. `used_at` set on first successful verify; subse
 DELETE FROM magic_link_tokens WHERE expires_at < datetime('now', '-1 day')
 ```
 
+**The `expires_at` column is for cleanup, not validation.** Token expiry is enforced by the signed token itself via `serializer.loads(token, max_age=900)` (the `itsdangerous` library raises if the signature is older than `max_age`). The row's `expires_at` is informational — it lets us prune rows safely after the signed token would already have rejected on its own. Future implementers should not add belt-and-braces "and `expires_at >= NOW()`" checks to the verify path; they're redundant and create false-positive rejection windows on clock skew.
+
 ### 4.3 Schema registration
 
 Both go into `src/flatpilot/schemas.py`:
 - `MAGIC_LINK_TOKENS_CREATE_SQL` registered in `SCHEMAS["magic_link_tokens"]`.
 - The two indexes registered alongside.
 - `email_normalized` ADD COLUMN goes into `database.py`'s existing `ensure_columns()` mechanism, *not* into `SCHEMAS` — it's a forward ALTER on existing installs. The `users` `CREATE TABLE` string in `SCHEMAS` is updated to declare the column inline so fresh installs go straight to the new shape.
+
+(The foundations PR §5.3 deliberately removed two `COLUMNS[...]` ALTER entries in favor of inline declarations. Bundle B's reintroduction of the pattern for `email_normalized` is also deliberate: this is a one-time forward migration on existing installs, exactly the case `ensure_columns()` was designed for. Future Phase 5 PRs that add ALTER-able columns should reuse this pathway rather than rebuild `users`.)
 
 ### 4.4 Untouched
 
@@ -309,7 +359,7 @@ All routes under `src/flatpilot/server/routes/`. Auth-required routes use `Depen
 |---|---|---|---|---|---|
 | GET | `/api/connections` | required | — | `{"connections": ConnectionOut[]}` | One entry per platform. Status from filesystem: `connected` if `state.json` exists with non-stale cookies, `expired` if all cookies stale, `disconnected` if no file, `in_progress` if `(user_id, platform) in _pending`. |
 | POST | `/api/connections/{platform}/start` | required | — | `202 {"status": "in_progress"}` | Validates platform; 404 unknown. 409 if already in progress for `(user_id, platform)`. Creates `asyncio.Event`, registers, spawns `login_engine` task. |
-| POST | `/api/connections/{platform}/done` | required | — | `204` | Looks up registered Event; 404 if absent. Calls `.set()`. |
+| POST | `/api/connections/{platform}/done` | required | — | `200 {"result": "saved" \| "abandoned" \| "timed_out"}` | Synchronous-with-timeout. Looks up registered Event (404 if absent), calls `.set()`, awaits the runner task with a 30s timeout, returns the engine's `LoginResult` so the frontend can render a definitive outcome without polling. |
 
 `ConnectionOut`: `{platform, status: "connected" | "expired" | "disconnected" | "in_progress", expires_at: str \| null}`.
 
@@ -357,7 +407,7 @@ On mount: `POST /api/auth/verify {token}` from `?t=<token>`. Success → redirec
 
 Top nav: wordmark + email + Connections link + Logout. shadcn `<Tabs>` with three values:
 
-- **Matches tab**: `GET /api/matches` → `MatchCard` per row. Apply / Skip / Copy URL buttons. Empty state copy (no CLI mention, no internal references): *"No matches yet. Profile and search setup in the Web UI are coming soon."* The CLI seed user (with bound email) sees their existing CLI-generated matches here naturally; non-seed users see the empty state until `FlatPilot-h1i` lands.
+- **Matches tab**: `GET /api/matches` → `MatchCard` per row. Apply / Skip / Copy URL buttons. Empty state copy (no CLI mention, no internal references, no time-bound language): *"No matches yet. Profile and saved-search setup will appear here once available."* The CLI seed user (with bound email) sees their existing CLI-generated matches here naturally; non-seed users see the empty state until `FlatPilot-h1i` lands.
 - **Applied tab**: `GET /api/applications` → `ApplicationRow` per row, status badges.
 - **Responses tab**: same data filtered to applications without `response_received_at`. `ResponseForm` per row.
 
@@ -376,7 +426,14 @@ in that window. When you see your dashboard, click Done.
                        [Cancel]    [Done]
 ```
 
-Done → `POST /api/connections/{platform}/done` → start polling `GET /api/connections` every 2s. Cancel → same endpoint (engine returns `ABANDONED` if no auth cookies captured). Modal closes on status flip. After 5 minutes of `in_progress`, modal shows "Still waiting…" with "Try again" button.
+Done → `POST /api/connections/{platform}/done`. Synchronous: response body is `{result: "saved" | "abandoned" | "timed_out"}`. Modal renders accordingly:
+- `saved` → modal closes, success toast, row updates from the response or a one-shot `GET /api/connections` refetch.
+- `abandoned` → error toast ("Login wasn't completed — make sure you see your dashboard before clicking Done.") and the modal stays open so the user can retry.
+- `timed_out` → "Server didn't get an answer in time. The browser window may still be open — finish logging in and click Done again."
+
+Cancel button uses the same endpoint (the engine returns `ABANDONED` when no auth cookies were captured). The browser-window-still-open backstop: if the user closes the headed Chromium directly without clicking Done, the engine's 5-minute `timeout_sec` fires and the next `GET /api/connections` shows the `(user, platform)` entry no longer `in_progress`.
+
+No post-Done polling. The initial page load fetches `GET /api/connections` once to render the table; subsequent updates come from explicit user actions or the `/done` response.
 
 ### 6.6 Shared
 
@@ -487,6 +544,7 @@ In `src/flatpilot/server/routes/connections.py`:
 
 ```python
 _pending: dict[tuple[int, str], asyncio.Event] = {}
+_pending_tasks: dict[tuple[int, str], asyncio.Task[LoginResult]] = {}
 
 @router.post("/{platform}/start", status_code=202)
 async def start(platform: str, user: User = Depends(get_current_user)):
@@ -498,9 +556,9 @@ async def start(platform: str, user: User = Depends(get_current_user)):
     event = asyncio.Event()
     _pending[key] = event
 
-    async def runner() -> None:
+    async def runner() -> LoginResult:
         try:
-            await run_login_session(
+            return await run_login_session(
                 platform,
                 storage_state_path=session_storage_path(user.id, platform),
                 completion_signal=event.wait(),
@@ -508,17 +566,30 @@ async def start(platform: str, user: User = Depends(get_current_user)):
             )
         finally:
             _pending.pop(key, None)
+            _pending_tasks.pop(key, None)
 
-    asyncio.create_task(runner())
+    _pending_tasks[key] = asyncio.create_task(runner())
     return {"status": "in_progress"}
 
-@router.post("/{platform}/done", status_code=204)
-async def done(platform: str, user: User = Depends(get_current_user)):
-    event = _pending.get((user.id, platform))
+@router.post("/{platform}/done")
+async def done(
+    platform: str,
+    user: User = Depends(get_current_user),
+) -> dict[str, str]:
+    key = (user.id, platform)
+    event = _pending.get(key)
     if event is None:
         raise HTTPException(404, detail="no_session_in_progress")
     event.set()
+    runner_task = _pending_tasks.get(key)  # parallel registry of the create_task handles
+    try:
+        result = await asyncio.wait_for(runner_task, timeout=30.0)
+    except asyncio.TimeoutError:
+        result = LoginResult.TIMED_OUT
+    return {"result": result.name.lower()}
 ```
+
+(The `_pending_tasks` parallel registry holds the `asyncio.Task` handle returned by `create_task` in `/start`, so `/done` can `await` the same runner with a timeout. Both `_pending` and `_pending_tasks` are cleaned up in the runner's `finally`.)
 
 Cancel button uses the same `done` endpoint — engine returns `ABANDONED` when no auth cookie is present.
 
@@ -528,6 +599,15 @@ Cancel button uses the same `done` endpoint — engine returns `ABANDONED` when 
 - `polite_session()` and headless-True default for scrape runs.
 - Anti-bot heuristics, rate limits, cookie expiry handling.
 - Per-platform login URLs / cookie names — relocated to the registry, values unchanged.
+
+### 7.7 Behavior change worth flagging
+
+The CLI shim now drives the login flow through `asyncio` (it didn't before — the original `flatpilot login` was synchronous, blocking on `input()`). The user-visible UX is preserved: the prompt text is the same, Enter advances, Ctrl-C aborts. But the underlying control-flow change means:
+- Signal handling now runs through asyncio's signal handler installation (`loop.add_signal_handler` style). Ctrl-C during the `input()` call cleanly cancels the running task and triggers the `finally` browser-close.
+- An existing test that relied on the synchronous control flow (e.g. asserting that `flatpilot login` blocks the test thread until input arrives) needs updating.
+- No CLI flag, return code, or stdout/stderr text changes. Scripts that pipe into `flatpilot login` continue to work because `asyncio.to_thread(input, ...)` reads from the same stdin.
+
+The acceptance criterion "Existing `flatpilot login wg-gesucht` works unchanged" remains accurate from the user's perspective; the test suite verifies the same external contract.
 
 ## 8. Tests
 
@@ -562,7 +642,10 @@ Cancel button uses the same `done` endpoint — engine returns `ABANDONED` when 
 | `test_post_application_response_404s_for_other_users_application` | 404 leak prevention. |
 | `test_get_connections_returns_status_per_platform` | `state.json` present → `connected` for that platform, `disconnected` for others. |
 | `test_get_connections_reports_expired_when_cookies_stale` | All cookies' `expires` < now → `expired`. |
-| `test_no_unscoped_sql_in_routes_module` | Static check: every SQL string in `server/routes/*.py` against user-scoped tables parameter-binds `user_id`. |
+| `test_no_unscoped_sql_in_routes_module` | Real SQL parse via `sqlglot`: walk every string literal in `server/routes/*.py`, attempt `sqlglot.parse_one(s)`, skip strings that don't parse as SQL, for parsed SQL touching `matches` / `applications` / `apply_locks` assert that the AST contains a `WHERE` (or join `ON`) referencing `user_id`. Regex-based audits are too brittle (multi-line strings, joins, subqueries) and were considered and rejected. |
+| `test_users_dual_unique_constraint` | Insert `email='Foo@x.com'`; second insert with `email='foo@x.com'` is rejected by `email_normalized UNIQUE` (both normalize to `foo@x.com`). Then directly insert (bypassing the normalize step) two rows differing only in case — `email UNIQUE` lets that through (byte-level), but the application-level `set_email` path computes `email_normalized` and trips the partial unique index. Both layers tested. |
+| `test_verify_endpoint_rejects_get` | `GET /api/auth/verify?t=...` returns 405 (Method Not Allowed). Only `POST` consumes tokens — the CSRF property from §3.5 is a runnable invariant. |
+| `test_no_get_endpoints_mutate_state` | Static check: walk `app.routes`, assert no `GET` route's handler writes to the database. (Implementation: the route handlers' `__module__` + name are checked against an allowlist of mutating helpers; failure surfaces the offending route.) |
 
 **`tests/test_login_engine.py`** (mocked Playwright, no real browser):
 
@@ -582,7 +665,9 @@ Cancel button uses the same `done` endpoint — engine returns `ABANDONED` when 
 |---|---|
 | `test_start_returns_202_and_registers_event` | 202; `_pending[(uid, platform)]` exists; `run_login_session` called with right args (mocked). |
 | `test_start_returns_409_if_already_in_progress` | Second start for same `(user, platform)` → 409. |
-| `test_done_sets_event_and_204s` | Event set after done. |
+| `test_done_returns_saved_when_engine_writes_state` | After `/start` + `/done`, response is `200 {"result": "saved"}` (engine mocked to return `SAVED`). |
+| `test_done_returns_abandoned_when_engine_finds_no_auth_cookie` | Engine mocked to return `ABANDONED` → response is `200 {"result": "abandoned"}`. |
+| `test_done_returns_timed_out_when_runner_exceeds_30s` | Runner blocked past timeout → response is `200 {"result": "timed_out"}`. The `_pending` registry is also cleaned up. |
 | `test_done_404s_when_no_start` | 404 if no prior start. |
 | `test_done_does_not_affect_other_users_pending` | User 2's done for same platform doesn't touch user 1's event. |
 
@@ -643,6 +728,7 @@ Backend: ≥95% on `src/flatpilot/server/`, `src/flatpilot/sessions/login_engine
 |---|---|---|
 | Stateless cookie sessions can't be revoked until they expire (30d). Stolen cookie remains valid. | Medium | Documented limitation. Logout clears cookie client-side. Server-side revocation = `FlatPilot-xzg`. Acceptable for local-only deploy. |
 | `_pending` dict breaks under multi-worker uvicorn. | Medium | Single-worker assertion at startup (warning if `--workers > 1`). Multi-worker support = `FlatPilot-28o`. |
+| **Server restart mid-connect orphans Chromium and the modal.** A `--reload` cycle (or any process bounce) loses `_pending` and the running login task; the headed Chromium process stays alive on the host with no parent listening; the user's next `POST /done` returns 404; the modal stays open with no recovery path. | Medium | (a) On FastAPI startup, scan for Chromium processes whose parent is `playwright`'s launcher and not the current PID, and best-effort `kill` them. (b) Document `--reload` as dev-only-while-not-connecting in the README. (c) Frontend's `GET /api/connections` after a browser refresh reflects the post-restart truth (no in-progress entry), so a stale modal can be dismissed by reloading the page. The orphaned-process scan is best-effort, not load-bearing — if it misses one, the user can `kill` manually. Filed as deferred-hardening if a follow-up bead emerges. |
 | Magic-link emails take >5–10 s through hobbyist SMTP, breaking ADR's UX latency budget. | Medium | If real-world latency falls outside budget, swap SMTP for Postmark/Resend per ADR — auth design unchanged. Separate small PR. |
 | Open signup + no rate limit + no existence reveal = SMTP abuse vector. | Medium | Local-only deploy makes it theoretical. **Hard rule: do not expose this PR's server to the public internet without `FlatPilot-j1k`.** Documented in README and ADR addendum. |
 | Headed Playwright on FastAPI process could hang an event loop slot during long login. | Low | Login runs as a `create_task`, not awaited inline. Handler returns 202 immediately. Playwright I/O is async-friendly anyway. |
@@ -667,11 +753,17 @@ Backend: ≥95% on `src/flatpilot/server/`, `src/flatpilot/sessions/login_engine
 - [ ] Cross-user isolation: a fresh non-seed user sees empty tabs even when seed user has matches/applications.
 - [ ] Connections page: clicking Connect on `wg-gesucht` opens a real headed Chromium via the engine. After hand-login + Done click, row flips to "Connected" with `expires_at`. Cookies land at the right per-user path.
 - [ ] Connect cancel path: closing the browser leaves no broken `state.json`.
+- [ ] **Connect synchronous result**: `POST /api/connections/{platform}/done` returns `200 {"result": "saved" | "abandoned" | "timed_out"}` — frontend never has to poll to learn the post-Done outcome. The 30s server-side timeout is enforced.
+- [ ] **Server-restart orphan scan**: FastAPI startup logs and best-effort kills any leftover Playwright-spawned Chromium processes from a prior run.
 - [ ] All new pytest files pass; existing test suite passes; `ruff check` clean; `mypy` clean. e2e smoke passes against a freshly-spun-up dev stack.
 - [ ] Coverage ≥95% on `src/flatpilot/server/`, `src/flatpilot/sessions/login_engine.py`, the new CLI path.
 - [ ] Schema migration: `init_db` on a foundations-PR-shaped DB brings up `email_normalized` and `magic_link_tokens` without data loss. Idempotent.
+- [ ] **Dual UNIQUE behavior verified**: `email UNIQUE` + partial unique index on `email_normalized` are both in place; tests cover both layers firing on case-conflicting inserts.
+- [ ] **CSRF posture verified**: `GET /api/auth/verify` returns 405; no `GET` route in `app.routes` writes to the database (asserted by `test_no_get_endpoints_mutate_state`).
 - [ ] Old localhost dashboard untouched: `flatpilot dashboard` continues to start the legacy stack.
-- [ ] Static SQL audit (`test_no_unscoped_sql_in_routes_module`) passes.
+- [ ] Static SQL audit (`test_no_unscoped_sql_in_routes_module`) passes — using `sqlglot`-backed AST inspection, not regex.
+- [ ] **`sqlglot` added to dev dependencies** in `pyproject.toml` for the audit test.
+- [ ] **e2e SMTP stub fixture** built: `web/tests/e2e/smtp_stub.ts` (or equivalent) intercepts the magic-link email and exposes a `getMagicLinkUrl()` helper used by `smoke.spec.ts` step 4. The stub is local to tests; production SMTP is unchanged.
 - [ ] README and a new ADR `docs/adr/0002-bundle-b-deployment-caveats.md` carry the **hard rule against public-internet exposure without `FlatPilot-j1k`**. (New ADR rather than appending to 0001 because 0001 is "Accepted" and pinned-as-of-foundations; deployment caveats specific to Bundle B's local-only constraint belong in their own ADR.)
 
 ## 11. Migration / rollout
@@ -688,6 +780,8 @@ On every server startup (post-migration):
 5. Magic-link token cleanup: `DELETE FROM magic_link_tokens WHERE expires_at < datetime('now', '-1 day')`.
 
 CLI continues to function unchanged for existing seed users with `email IS NULL`. They're prompted to run `flatpilot set-email` only if they want to use the Web UI.
+
+**Public-exposure hard rule (restated for visibility — also in §10).** Bundle B's open-signup + no-rate-limit posture (chosen because the deployment audience is local-only) is **NOT safe to expose to the public internet** until `FlatPilot-j1k` lands the email allowlist. The README, the ADR `docs/adr/0002-bundle-b-deployment-caveats.md`, and the FastAPI app's startup log message all say so. Any operator running this on a VPS without first landing `j1k` is operating outside what this PR designed for.
 
 ## 12. Decision log (chosen during brainstorming)
 

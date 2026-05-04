@@ -116,9 +116,14 @@ Two processes in dev: `uvicorn flatpilot.server.app:app --reload` on `:8000` and
            email_links.send_magic_link(email, link=http://localhost:3000/verify?t=<token>)
            respond 200 {"ok": true}    ← always, regardless of email validity
 3. User clicks link → /verify?t=<token> → POST /api/auth/verify {token}
-4. Server: payload = serializer.loads(token, max_age=900)        # signature + expiry
-           row = SELECT used_at, expires_at FROM magic_link_tokens WHERE jti = ?
-           if row.used_at OR NOW > row.expires_at: 400
+4. Server: payload = serializer.loads(token, max_age=900)   # itsdangerous: signature + expiry
+           row = SELECT used_at FROM magic_link_tokens WHERE jti = ?
+           if row is None: 400               # token's jti not on file (foreign / cleaned-up row)
+           if row.used_at is not None: 400   # replay attempt — single-use only
+           # NB: do NOT also check NOW > row.expires_at. Token expiry is enforced
+           # by serializer.loads(max_age=…) above; the row's expires_at exists for
+           # cleanup driving (§4.2), not validation. Adding a redundant DB check
+           # opens false-positive rejections on clock skew.
            UPDATE magic_link_tokens SET used_at = NOW WHERE jti = ?
            user = SELECT * FROM users WHERE email_normalized = LOWER(TRIM(email))
            if user is None:
@@ -144,24 +149,21 @@ Sessions are stateless signed cookies. Revocation in this PR = "wait for the coo
    if key in _pending: 409
    event = asyncio.Event()
    _pending[key] = event
-   asyncio.create_task(
-       run_login_session(
-           platform,
-           storage_state_path=session_storage_path(user_id, platform),
-           completion_signal=event.wait(),
-           timeout_sec=300.0,
-       ).then(lambda _: _pending.pop(key, None))
-   )
+   _pending_tasks[key] = asyncio.create_task(runner_for(key, ...))
+   # The exact runner shape is in §7.5 — wraps run_login_session in a try/finally
+   # that cleans both registries and stashes the LoginResult into _last_result[key]
+   # so a late /done can still report the outcome.
    respond 202 {"status": "in_progress"}
 3. Headed Chromium window opens on the host machine (= the user's laptop, local-only).
    User logs in inside that window.
 4. User clicks Done in the modal → POST /api/connections/<platform>/done
-5. FastAPI handler:
-   - lookup _pending[(user_id, platform)]; 404 if absent
-   - event.set()
-   - await the runner task with a 30s timeout
-   - the runner returns LoginResult (SAVED / ABANDONED / TIMED_OUT / CANCELLED)
-   - respond 200 {"result": "saved" | "abandoned" | "timed_out"}
+5. FastAPI handler (full state machine — actual code in §7.5):
+   - lookup _pending_tasks[key]
+   - if runner already finished: read _last_result[key] (set by the runner's finally),
+     consume the entry, respond 200 {"result": <cached>}. If both registries are empty,
+     respond 404.
+   - if runner still running: event.set(), await runner_task with a 30s timeout, respond
+     200 {"result": "saved" | "abandoned" | "timed_out" | "cancelled"}
 6. login_engine, woken by event.set(), inspects context.cookies():
    - If authenticated: context.storage_state(path=storage_state_path) → returns SAVED
    - If not:                                                          → returns ABANDONED
@@ -252,7 +254,9 @@ web/
 │   └── lib/
 │       ├── api.ts
 │       └── auth.ts
-└── tests/e2e/smoke.spec.ts
+└── tests/e2e/
+    ├── smoke.spec.ts
+    └── smtp_stub.ts          # local SMTP intercept, exposes getMagicLinkUrl()
 ```
 
 ## 4. Schema
@@ -435,6 +439,8 @@ Cancel button uses the same endpoint (the engine returns `ABANDONED` when no aut
 
 No post-Done polling. The initial page load fetches `GET /api/connections` once to render the table; subsequent updates come from explicit user actions or the `/done` response.
 
+**Tab-close safety.** The connect modal registers a `beforeunload` handler that fires `navigator.sendBeacon('/api/connections/<platform>/done')` when the user closes the tab without clicking Done or Cancel. The beacon is fire-and-forget — no response is consumed — but it lets the server clean up promptly instead of waiting the full 300s engine timeout. If the beacon doesn't reach the server (rare; firefox/chromium support is solid), the engine's own timeout is the backstop.
+
 ### 6.6 Shared
 
 - `web/src/app/layout.tsx` — root, `<Toaster>` from shadcn.
@@ -545,6 +551,9 @@ In `src/flatpilot/server/routes/connections.py`:
 ```python
 _pending: dict[tuple[int, str], asyncio.Event] = {}
 _pending_tasks: dict[tuple[int, str], asyncio.Task[LoginResult]] = {}
+_last_result: dict[tuple[int, str], LoginResult] = {}   # set in runner finally,
+                                                        # read by late /done calls
+_LAST_RESULT_TTL_SEC = 60.0   # results expire so they can't poison a later /start
 
 @router.post("/{platform}/start", status_code=202)
 async def start(platform: str, user: User = Depends(get_current_user)):
@@ -553,23 +562,36 @@ async def start(platform: str, user: User = Depends(get_current_user)):
     key = (user.id, platform)
     if key in _pending:
         raise HTTPException(409, detail="already_in_progress")
+    _last_result.pop(key, None)        # any cached result from a prior session is stale now
     event = asyncio.Event()
     _pending[key] = event
 
     async def runner() -> LoginResult:
         try:
-            return await run_login_session(
+            result = await run_login_session(
                 platform,
                 storage_state_path=session_storage_path(user.id, platform),
                 completion_signal=event.wait(),
                 timeout_sec=300.0,
             )
+        except BaseException:
+            # CancelledError, KeyboardInterrupt, or anything genuinely unexpected.
+            # Stash a result so a late /done has something to report instead of crashing.
+            _last_result[key] = LoginResult.CANCELLED
+            raise
+        else:
+            _last_result[key] = result
+            return result
         finally:
             _pending.pop(key, None)
             _pending_tasks.pop(key, None)
+            # _last_result is intentionally NOT popped here — a /done call that arrives
+            # after the runner finished still needs to read it. It's cleared on the next
+            # /start for the same key, or by the periodic sweep below.
 
     _pending_tasks[key] = asyncio.create_task(runner())
     return {"status": "in_progress"}
+
 
 @router.post("/{platform}/done")
 async def done(
@@ -577,11 +599,21 @@ async def done(
     user: User = Depends(get_current_user),
 ) -> dict[str, str]:
     key = (user.id, platform)
+    runner_task = _pending_tasks.get(key)
+
+    # Case 1: runner already finished (timeout / early completion / browser crash).
+    # The runner's finally already popped both registries, but _last_result still has
+    # the verdict (the runner stashed it before clearing the task handle).
+    if runner_task is None:
+        cached = _last_result.pop(key, None)
+        if cached is None:
+            raise HTTPException(404, detail="no_session_in_progress")
+        return {"result": cached.name.lower()}
+
+    # Case 2: runner still running. Signal it and wait for the verdict.
     event = _pending.get(key)
-    if event is None:
-        raise HTTPException(404, detail="no_session_in_progress")
-    event.set()
-    runner_task = _pending_tasks.get(key)  # parallel registry of the create_task handles
+    if event is not None:
+        event.set()
     try:
         result = await asyncio.wait_for(runner_task, timeout=30.0)
     except asyncio.TimeoutError:
@@ -589,9 +621,11 @@ async def done(
     return {"result": result.name.lower()}
 ```
 
-(The `_pending_tasks` parallel registry holds the `asyncio.Task` handle returned by `create_task` in `/start`, so `/done` can `await` the same runner with a timeout. Both `_pending` and `_pending_tasks` are cleaned up in the runner's `finally`.)
+The `_last_result` cache is deliberately small: one entry per `(user, platform)`, set when the runner finishes, consumed by the next `/done` for that key, and proactively cleared on the next `/start` for that key so it can't leak across sessions. A periodic sweep (run on every `/start` and on FastAPI startup) drops entries older than `_LAST_RESULT_TTL_SEC` to bound memory if a runner ever completes without a `/done` ever arriving.
 
 Cancel button uses the same `done` endpoint — engine returns `ABANDONED` when no auth cookie is present.
+
+**User-closes-tab safety net.** If the user closes the modal (or the entire browser tab) without clicking Done or Cancel, the runner waits the full 300s server-side timeout. The frontend mitigates: the modal's `beforeunload` handler fires `navigator.sendBeacon('/api/connections/<platform>/done')` so a closing tab still triggers cleanup. The endpoint accepts the beacon (no body), treats it as Done, and returns whatever result the engine produces (typically `ABANDONED` since no auth cookies were captured). If the beacon fails, the 300s engine timeout is the backstop.
 
 ### 7.6 Untouched
 
@@ -645,7 +679,7 @@ The acceptance criterion "Existing `flatpilot login wg-gesucht` works unchanged"
 | `test_no_unscoped_sql_in_routes_module` | Real SQL parse via `sqlglot`: walk every string literal in `server/routes/*.py`, attempt `sqlglot.parse_one(s)`, skip strings that don't parse as SQL, for parsed SQL touching `matches` / `applications` / `apply_locks` assert that the AST contains a `WHERE` (or join `ON`) referencing `user_id`. Regex-based audits are too brittle (multi-line strings, joins, subqueries) and were considered and rejected. |
 | `test_users_dual_unique_constraint` | Insert `email='Foo@x.com'`; second insert with `email='foo@x.com'` is rejected by `email_normalized UNIQUE` (both normalize to `foo@x.com`). Then directly insert (bypassing the normalize step) two rows differing only in case — `email UNIQUE` lets that through (byte-level), but the application-level `set_email` path computes `email_normalized` and trips the partial unique index. Both layers tested. |
 | `test_verify_endpoint_rejects_get` | `GET /api/auth/verify?t=...` returns 405 (Method Not Allowed). Only `POST` consumes tokens — the CSRF property from §3.5 is a runnable invariant. |
-| `test_no_get_endpoints_mutate_state` | Static check: walk `app.routes`, assert no `GET` route's handler writes to the database. (Implementation: the route handlers' `__module__` + name are checked against an allowlist of mutating helpers; failure surfaces the offending route.) |
+| `test_no_get_endpoints_mutate_state` | Declarative allowlist: every `GET` route handler in `app.routes` must have its qualname in `READONLY_GET_HANDLERS: set[str]` defined at the top of the test module. The test fails if any registered `GET` route's handler qualname isn't in the allowlist. Adding a new GET handler is a deliberate two-line edit (route definition + allowlist entry); accidentally adding a state-changing GET fails CI immediately. Concrete and brittle in the right way. |
 
 **`tests/test_login_engine.py`** (mocked Playwright, no real browser):
 
@@ -668,8 +702,13 @@ The acceptance criterion "Existing `flatpilot login wg-gesucht` works unchanged"
 | `test_done_returns_saved_when_engine_writes_state` | After `/start` + `/done`, response is `200 {"result": "saved"}` (engine mocked to return `SAVED`). |
 | `test_done_returns_abandoned_when_engine_finds_no_auth_cookie` | Engine mocked to return `ABANDONED` → response is `200 {"result": "abandoned"}`. |
 | `test_done_returns_timed_out_when_runner_exceeds_30s` | Runner blocked past timeout → response is `200 {"result": "timed_out"}`. The `_pending` registry is also cleaned up. |
-| `test_done_404s_when_no_start` | 404 if no prior start. |
+| `test_done_404s_when_no_start` | 404 if no prior start AND no cached `_last_result`. |
+| `test_done_uses_last_result_cache_when_runner_already_finished` | Engine times out (300s server-side) and runner's `finally` stashes `LoginResult.TIMED_OUT` in `_last_result`. A `/done` arriving after that returns `200 {"result": "timed_out"}` — does NOT 404. The cache entry is consumed (single-read). |
+| `test_last_result_cleared_on_subsequent_start_for_same_key` | After a runner finishes and stashes a result, a fresh `/start` for the same `(user, platform)` clears the cached entry so it can't poison a later `/done`. |
+| `test_last_result_swept_after_ttl` | A stashed `_last_result` entry older than `_LAST_RESULT_TTL_SEC` is dropped on the next sweep (asserts memory bound). |
+| `test_done_runner_cancelled_path` | Runner is `task.cancel()`d (e.g. server shutting down); `_last_result[key]` is set to `CANCELLED`. A `/done` arriving after returns `200 {"result": "cancelled"}`. |
 | `test_done_does_not_affect_other_users_pending` | User 2's done for same platform doesn't touch user 1's event. |
+| `test_done_handles_beforeunload_beacon` | A `POST /api/connections/<platform>/done` with empty body (the `sendBeacon` shape from the modal's `beforeunload` handler) is treated as Done. Engine returns `ABANDONED`; the browser tab closing doesn't leak the runner. |
 
 **`tests/test_set_email_cli.py`**:
 
@@ -728,7 +767,7 @@ Backend: ≥95% on `src/flatpilot/server/`, `src/flatpilot/sessions/login_engine
 |---|---|---|
 | Stateless cookie sessions can't be revoked until they expire (30d). Stolen cookie remains valid. | Medium | Documented limitation. Logout clears cookie client-side. Server-side revocation = `FlatPilot-xzg`. Acceptable for local-only deploy. |
 | `_pending` dict breaks under multi-worker uvicorn. | Medium | Single-worker assertion at startup (warning if `--workers > 1`). Multi-worker support = `FlatPilot-28o`. |
-| **Server restart mid-connect orphans Chromium and the modal.** A `--reload` cycle (or any process bounce) loses `_pending` and the running login task; the headed Chromium process stays alive on the host with no parent listening; the user's next `POST /done` returns 404; the modal stays open with no recovery path. | Medium | (a) On FastAPI startup, scan for Chromium processes whose parent is `playwright`'s launcher and not the current PID, and best-effort `kill` them. (b) Document `--reload` as dev-only-while-not-connecting in the README. (c) Frontend's `GET /api/connections` after a browser refresh reflects the post-restart truth (no in-progress entry), so a stale modal can be dismissed by reloading the page. The orphaned-process scan is best-effort, not load-bearing — if it misses one, the user can `kill` manually. Filed as deferred-hardening if a follow-up bead emerges. |
+| **Server restart mid-connect orphans Chromium and the modal.** A `--reload` cycle (or any process bounce) loses `_pending` and the running login task; the headed Chromium process stays alive on the host with no parent listening; the user's next `POST /done` returns 404; the modal stays open with no recovery path. | Medium | (a) **PID-file tracking, not parent-process heuristics.** When `run_login_session` launches Chromium, it writes the spawned process's PID to `~/.flatpilot/runtime/playwright_pids/<random>.pid` and removes the file in the engine's `finally`. On FastAPI startup, the server reads any leftover entries in that directory, sends `SIGTERM` to each PID *only if* `/proc/<pid>/exe` (Linux) or `lsof -p <pid>` (macOS) confirms the process is still a Playwright-spawned Chromium binary — never a generic `pgrep chromium`. PIDs that don't validate are simply unlinked. This avoids the false-positive risk of killing the user's other Chromium windows. The validation step is intentionally conservative: if it can't confirm, it does nothing. (b) Document `--reload` as dev-only-while-not-connecting in the README. (c) Frontend's `GET /api/connections` after a browser refresh reflects the post-restart truth (no in-progress entry), so a stale modal can be dismissed by reloading the page. |
 | Magic-link emails take >5–10 s through hobbyist SMTP, breaking ADR's UX latency budget. | Medium | If real-world latency falls outside budget, swap SMTP for Postmark/Resend per ADR — auth design unchanged. Separate small PR. |
 | Open signup + no rate limit + no existence reveal = SMTP abuse vector. | Medium | Local-only deploy makes it theoretical. **Hard rule: do not expose this PR's server to the public internet without `FlatPilot-j1k`.** Documented in README and ADR addendum. |
 | Headed Playwright on FastAPI process could hang an event loop slot during long login. | Low | Login runs as a `create_task`, not awaited inline. Handler returns 202 immediately. Playwright I/O is async-friendly anyway. |

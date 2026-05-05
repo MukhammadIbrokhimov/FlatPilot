@@ -25,6 +25,7 @@ from pathlib import Path
 from rich.console import Console
 
 from flatpilot.errors import FlatPilotError
+from flatpilot.scrapers import immoscout24_rss as _is24
 from flatpilot.scrapers import kleinanzeigen as _ka
 from flatpilot.scrapers import wg_gesucht as _wg
 from flatpilot.scrapers.base import session_dir
@@ -61,6 +62,17 @@ _LOGIN_SITES: dict[str, _LoginSite] = {
         login_url=_ka.LOGIN_URL,
         warmup_url=_ka.WARMUP_URL,
         consent_selectors=_ka.CONSENT_SELECTORS,
+    ),
+    # ImmoScout24's runtime integration is RSS-only (the user pastes
+    # saved-search feed URLs from their account); no current code path
+    # reads the cookies seeded here. The recipe exists so the
+    # Connected-Accounts UI (FlatPilot-8jx) has a backend for its
+    # `Connect` button and so a future filler can adopt the same
+    # storage_state layout. FlatPilot-5mf.
+    "immoscout24": _LoginSite(
+        login_url=_is24.LOGIN_URL,
+        warmup_url=_is24.WARMUP_URL,
+        consent_selectors=_is24.CONSENT_SELECTORS,
     ),
 }
 

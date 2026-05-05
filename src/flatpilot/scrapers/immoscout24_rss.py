@@ -46,6 +46,30 @@ USER_AGENT = (
     "+https://github.com/MukhammadIbrokhimov/FlatPilot)"
 )
 
+# Headed-browser login constants. The RSS scraper above never opens a
+# browser, but `flatpilot login immoscout24` does — and the `Connect`
+# button on the Web UI's Connected-Accounts page (FlatPilot-8jx) calls
+# the same engine. Cookies seeded here have no current consumer (the
+# RSS adapter authenticates only via the URLs the user pastes from
+# their account); the recipe exists so a future filler or
+# authenticated-fetch path can adopt the same storage layout that
+# WG-Gesucht and Kleinanzeigen use today.
+HOST = "https://www.immobilienscout24.de"
+WARMUP_URL = f"{HOST}/"
+LOGIN_URL = f"{HOST}/anmelden.html"
+
+# ImmoScout24 fronts cookies via Sourcepoint's TCF banner. The labels
+# below cover the German variants Sourcepoint ships across A/B test
+# arms; they should be revisited the first time `flatpilot login
+# immoscout24` is run live and the actual button is captured.
+CONSENT_SELECTORS: tuple[str, ...] = (
+    "button[title='Alle akzeptieren']",
+    "button:has-text('Alle akzeptieren')",
+    "button:has-text('Akzeptieren')",
+    "button:has-text('Einverstanden')",
+    "button:has-text('Zustimmen')",
+)
+
 _EXPOSE_ID_RE = re.compile(r"/expose/(\d+)")
 _RENT_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*€")
 _SIZE_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*m²")

@@ -59,6 +59,11 @@ logger = logging.getLogger(__name__)
 
 HOST = "https://www.kleinanzeigen.de"
 WARMUP_URL = f"{HOST}/"
+# `/m-einloggen.html` is Kleinanzeigen's dedicated login form; an
+# already-authenticated visit redirects to the personal homepage, so the
+# same URL is safe for both fresh logins and re-auth flows from
+# `flatpilot login`.
+LOGIN_URL = f"{HOST}/m-einloggen.html"
 
 # Kleinanzeigen search path:
 #   /s-wohnung-mieten/<city-slug>/c203l<loc_id>[r<radius_km>]

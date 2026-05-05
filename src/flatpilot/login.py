@@ -25,6 +25,7 @@ from pathlib import Path
 from rich.console import Console
 
 from flatpilot.errors import FlatPilotError
+from flatpilot.scrapers import kleinanzeigen as _ka
 from flatpilot.scrapers import wg_gesucht as _wg
 from flatpilot.scrapers.base import session_dir
 from flatpilot.scrapers.session import (
@@ -55,6 +56,11 @@ _LOGIN_SITES: dict[str, _LoginSite] = {
         login_url=_wg.LOGIN_URL,
         warmup_url=_wg.WARMUP_URL,
         consent_selectors=_wg.CONSENT_SELECTORS,
+    ),
+    "kleinanzeigen": _LoginSite(
+        login_url=_ka.LOGIN_URL,
+        warmup_url=_ka.WARMUP_URL,
+        consent_selectors=_ka.CONSENT_SELECTORS,
     ),
 }
 

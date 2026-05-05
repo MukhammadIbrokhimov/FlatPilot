@@ -18,9 +18,14 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from flatpilot.fillers.base import SubmitVerificationError
-from flatpilot.fillers.wg_gesucht import SELECTORS, WGGesuchtFiller
+from flatpilot.fillers.wg_gesucht import (
+    SELECTORS,
+    SUBMIT_ADVISORY_SELECTORS,
+    WGGesuchtFiller,
+)
 
 _FORM_URL = "https://www.wg-gesucht.de/nachricht-senden/listing-123.html"
 _POST_SUBMIT_URL = "https://www.wg-gesucht.de/nachrichten/inbox.html"
@@ -35,10 +40,12 @@ class _Locator:
         count: int = 1,
         href: str | None = None,
         click_handler=None,
+        is_visible: bool | None = None,
     ) -> None:
         self._count = count
         self._href = href
         self.click_handler = click_handler
+        self._is_visible = is_visible
         self.fill_calls: list[str] = []
         self.set_files_calls: list[list[str]] = []
         self.click_calls: int = 0
@@ -62,10 +69,15 @@ class _Locator:
     def set_input_files(self, paths: list[str]) -> None:
         self.set_files_calls.append(paths)
 
-    def click(self) -> None:
+    def click(self, **kwargs) -> None:
         self.click_calls += 1
         if self.click_handler is not None:
             self.click_handler()
+
+    def is_visible(self, timeout: int | None = None) -> bool:
+        if self._is_visible is None:
+            return self._count > 0
+        return self._is_visible
 
     def wait_for(self, **kwargs) -> None:
         self.wait_calls.append(kwargs)
@@ -214,3 +226,126 @@ def test_fill_attachment_must_exist(tmp_path, fake_session):
             attachments=[missing],
             submit=False,
         )
+
+
+def test_fill_dismisses_advisory_modal_before_submit(fake_session):
+    # FlatPilot-k17: a #sec_advice Bootstrap modal can intercept submit
+    # clicks. If a dismiss target is visible at submit time, the filler
+    # should click it pre-emptively so the submit click is not blocked.
+    advisory = _Locator(count=1, is_visible=True)
+    fake_session._locators[SUBMIT_ADVISORY_SELECTORS[0]] = advisory
+    fake_session.submit_locator.click_handler = lambda: setattr(
+        fake_session, "url", _POST_SUBMIT_URL
+    )
+
+    filler = WGGesuchtFiller()
+    report = filler.fill(
+        listing_url="https://www.wg-gesucht.de/listing/123.html",
+        message="Hallo, ich bin interessiert.",
+        attachments=[],
+        submit=True,
+    )
+
+    assert advisory.click_calls == 1
+    assert fake_session.submit_locator.click_calls == 1
+    assert report.submitted is True
+
+
+def test_fill_skips_dismissal_when_no_advisory_visible(fake_session):
+    # If no advisory targets are visible, no dismissal click should fire —
+    # the pre-emptive sweep is a cheap no-op on the common path.
+    advisory = _Locator(count=1, is_visible=False)
+    fake_session._locators[SUBMIT_ADVISORY_SELECTORS[0]] = advisory
+    fake_session.submit_locator.click_handler = lambda: setattr(
+        fake_session, "url", _POST_SUBMIT_URL
+    )
+
+    filler = WGGesuchtFiller()
+    filler.fill(
+        listing_url="https://www.wg-gesucht.de/listing/123.html",
+        message="Hallo.",
+        attachments=[],
+        submit=True,
+    )
+
+    assert advisory.click_calls == 0
+    assert fake_session.submit_locator.click_calls == 1
+
+
+def test_fill_recovers_when_modal_blocks_first_submit(fake_session):
+    # Pre-emptive dismissal is best-effort; if the modal opens in
+    # response to the click itself, the first submit times out. The
+    # filler should then dismiss and retry once.
+    advisory = _Locator(count=1, is_visible=True)
+    fake_session._locators[SUBMIT_ADVISORY_SELECTORS[0]] = advisory
+
+    submit_calls = {"n": 0}
+
+    def submit_handler():
+        submit_calls["n"] += 1
+        if submit_calls["n"] == 1:
+            raise PlaywrightTimeoutError("intercepted by modal")
+        fake_session.url = _POST_SUBMIT_URL
+
+    fake_session.submit_locator.click_handler = submit_handler
+
+    filler = WGGesuchtFiller()
+    report = filler.fill(
+        listing_url="https://www.wg-gesucht.de/listing/123.html",
+        message="Hallo.",
+        attachments=[],
+        submit=True,
+    )
+
+    assert fake_session.submit_locator.click_calls == 2
+    assert advisory.click_calls >= 1
+    assert report.submitted is True
+
+
+def test_fill_submit_timeout_without_advisory_raises_submit_verification(fake_session):
+    # The headline silent-failure bug from FlatPilot-k17: a Playwright
+    # TimeoutError from .click() must surface as SubmitVerificationError
+    # so apply_to_flat's `except FillError` path records a failed row
+    # and auto_apply._try_flat continues to the next candidate.
+    advisory = _Locator(count=1, is_visible=False)
+    fake_session._locators[SUBMIT_ADVISORY_SELECTORS[0]] = advisory
+
+    def submit_handler():
+        raise PlaywrightTimeoutError("locator click timed out")
+
+    fake_session.submit_locator.click_handler = submit_handler
+
+    filler = WGGesuchtFiller()
+    with pytest.raises(SubmitVerificationError, match="overlay|timed out"):
+        filler.fill(
+            listing_url="https://www.wg-gesucht.de/listing/123.html",
+            message="Hallo.",
+            attachments=[],
+            submit=True,
+        )
+
+    assert fake_session.submit_locator.click_calls == 1
+
+
+def test_fill_submit_timeout_after_dismissal_raises_submit_verification(fake_session):
+    # If dismissal succeeded but the retry click also times out, raise
+    # SubmitVerificationError rather than letting PlaywrightTimeoutError
+    # bubble to the apply pipeline as a generic Exception.
+    advisory = _Locator(count=1, is_visible=True)
+    fake_session._locators[SUBMIT_ADVISORY_SELECTORS[0]] = advisory
+
+    def submit_handler():
+        raise PlaywrightTimeoutError("still blocked")
+
+    fake_session.submit_locator.click_handler = submit_handler
+
+    filler = WGGesuchtFiller()
+    with pytest.raises(SubmitVerificationError, match="even after dismissing"):
+        filler.fill(
+            listing_url="https://www.wg-gesucht.de/listing/123.html",
+            message="Hallo.",
+            attachments=[],
+            submit=True,
+        )
+
+    assert fake_session.submit_locator.click_calls == 2

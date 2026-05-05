@@ -101,6 +101,23 @@ FORM_URL_SEGMENT = "/nachricht-senden/"
 SUBMIT_NAV_WAIT_MS = 5_000
 FORM_WAIT_MS = 5_000
 FIELD_WAIT_MS = 3_000
+# Shorter than Playwright's 30s default so we recover from a #sec_advice
+# intercept in ~10s + retry rather than ~30s + retry. FlatPilot-k17.
+SUBMIT_CLICK_TIMEOUT_MS = 10_000
+ADVISORY_VISIBLE_TIMEOUT_MS = 500
+
+# WG-Gesucht's "security advice" Bootstrap modal — `<div id="sec_advice"
+# class="modal fade ... in">…</div>` — can render above the messenger
+# form on the first submit per session for newly-authenticated accounts
+# and intercept pointer events on the submit button. Selectors are tried
+# in order against ``locator(...).first``; the first visible match is
+# clicked. FlatPilot-k17.
+SUBMIT_ADVISORY_SELECTORS: tuple[str, ...] = (
+    "#sec_advice button:has-text('Verstanden')",
+    "#sec_advice .btn-primary",
+    "#sec_advice [data-dismiss='modal']",
+    "#sec_advice button.close",
+)
 
 
 @register
@@ -168,7 +185,7 @@ class WGGesuchtFiller:
                         f"{self.platform}: no submit button matching "
                         f"{SELECTORS.submit_button!r} on {contact_url}"
                     )
-                submit_btn.click()
+                self._click_submit(pg, submit_btn)
                 # Give the page a moment to navigate. WG-Gesucht's
                 # messenger redirects to /nachrichten/<thread> on
                 # success; on validation failure it stays on the form
@@ -241,6 +258,50 @@ class WGGesuchtFiller:
                 f"{self.platform}: navigated to {pg.url} but form selector "
                 f"{SELECTORS.form!r} never became visible"
             ) from exc
+
+    def _click_submit(self, pg: Any, submit_btn: Any) -> None:
+        # FlatPilot-k17. The #sec_advice Bootstrap modal can intercept
+        # the submit click — sometimes it is already rendered with the
+        # `in` class at form load, sometimes it opens in response to the
+        # click itself. Pre-emptive dismissal handles the former cheaply;
+        # one dismiss-and-retry handles the latter. A still-blocked click
+        # converts to SubmitVerificationError so apply_to_flat records a
+        # `status='failed'` row instead of letting PlaywrightTimeoutError
+        # bubble out as a generic exception that aborts the auto-apply
+        # queue.
+        self._dismiss_submit_advisory(pg)
+        try:
+            submit_btn.click(timeout=SUBMIT_CLICK_TIMEOUT_MS)
+            return
+        except PlaywrightTimeoutError as first_exc:
+            if not self._dismiss_submit_advisory(pg):
+                raise SubmitVerificationError(
+                    f"{self.platform}: submit click timed out at {pg.url} — "
+                    f"likely intercepted by an overlay we could not dismiss"
+                ) from first_exc
+        try:
+            submit_btn.click(timeout=SUBMIT_CLICK_TIMEOUT_MS)
+        except PlaywrightTimeoutError as retry_exc:
+            raise SubmitVerificationError(
+                f"{self.platform}: submit click timed out at {pg.url} "
+                f"even after dismissing advisory modal"
+            ) from retry_exc
+
+    def _dismiss_submit_advisory(self, pg: Any) -> bool:
+        for selector in SUBMIT_ADVISORY_SELECTORS:
+            try:
+                btn = pg.locator(selector).first
+                if btn.is_visible(timeout=ADVISORY_VISIBLE_TIMEOUT_MS):
+                    btn.click()
+                    logger.info(
+                        "%s: dismissed advisory modal via %s",
+                        self.platform,
+                        selector,
+                    )
+                    return True
+            except Exception:
+                continue
+        return False
 
     def _fill_required(self, pg: Any, selector: str, value: str, *, label: str) -> None:
         target = pg.locator(selector).first

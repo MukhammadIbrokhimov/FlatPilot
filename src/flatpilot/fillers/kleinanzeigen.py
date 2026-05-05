@@ -7,14 +7,16 @@ shared), opens the modal contact form by clicking its trigger button,
 fills the message body, and (with ``submit=True``) clicks submit and
 verifies the JSON endpoint reported success.
 
-Selectors were transcribed from an unauthenticated DOM snapshot of a
-real Berlin listing on 2026-04-27. The form lives under
-``form#viewad-contact-modal-form`` and is hidden by default
-(``mfp-popup-large mfp-hide modal-dialog``); clicking
-``button#viewad-contact-button-login-modal`` reveals it for an
-authenticated user — for an unauthenticated user the same trigger
-opens a login modal, which we never reach because :meth:`_guard_login`
-raises first.
+Selectors were verified empirically against the authenticated DOM of a
+live Berlin listing on 2026-05-05 (FlatPilot-92j). The contact form
+for logged-in users is the inline ``form#viewad-contact-form``, which
+is visible by default — no trigger click needed in the common case.
+The separate ``form#viewad-contact-modal-form`` (hidden,
+``mfp-popup-large mfp-hide modal-dialog``) is the unauthenticated
+fallback path that :meth:`_guard_login` short-circuits before we reach
+it. ``button#viewad-contact-button`` lives outside both forms and is
+kept only as a defensive fallback for DOM variants where the inline
+form is not pre-rendered.
 
 Why no name / phone fill: Kleinanzeigen prefills both fields from the
 logged-in user's account. The WG-Gesucht filler follows the same
@@ -31,8 +33,9 @@ mismatch loudly rather than silently sending an unaccompanied message.
 Submit verification differs from WG-Gesucht: Kleinanzeigen submits via
 XHR to ``/s-anbieter-kontaktieren.json`` so the form URL never
 changes. Instead we wait for either ``.ajaxform-success`` (success
-banner) or ``.outcomebox-error`` (error banner) to become visible; a
-timeout falls through to :class:`SubmitVerificationError`.
+banner) or ``.outcomebox-error`` (error banner) under
+``form#viewad-contact-form`` to become visible; a timeout falls
+through to :class:`SubmitVerificationError`.
 """
 
 from __future__ import annotations
@@ -70,29 +73,26 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class _Selectors:
-    # Trigger button observed on the unauthenticated DOM. The
-    # `-login-modal` id suffix is suggestive: the same button may open
-    # a login modal for anonymous users and the contact form for
-    # authenticated users, OR the authenticated DOM may expose a
-    # different id entirely. Empirical verification against a real
-    # logged-in session is tracked as a follow-up bead — same policy
-    # FlatPilot-fze established for the WG-Gesucht filler. Mismatch
-    # surfaces as FormNotFoundError (loud), not silent message drops.
-    contact_trigger: str = "button#viewad-contact-button-login-modal"
-    form: str = "form#viewad-contact-modal-form"
+    # Verified on the authenticated DOM 2026-05-05 (FlatPilot-92j): the
+    # inline #viewad-contact-form is visible by default, so the trigger
+    # below is only exercised when that form happens to be missing
+    # (mobile variant, soft-deauth state, etc.). On clean auth runs
+    # _reveal_contact_form early-exits before the trigger is touched.
+    contact_trigger: str = "button#viewad-contact-button"
+    form: str = "form#viewad-contact-form"
     message_input: str = (
-        "textarea#viewad-contact-message, "
-        "textarea[name='message']"
+        "form#viewad-contact-form textarea#viewad-contact-message, "
+        "form#viewad-contact-form textarea[name='message']"
     )
     file_input: str = (
-        "form#viewad-contact-modal-form input[type='file']"
+        "form#viewad-contact-form input[type='file']"
     )
     submit_button: str = (
-        "form#viewad-contact-modal-form button.viewad-contact-submit, "
-        "form#viewad-contact-modal-form button[type='submit']"
+        "form#viewad-contact-form button.viewad-contact-submit, "
+        "form#viewad-contact-form button[type='submit']"
     )
-    success_marker: str = "form#viewad-contact-modal-form .ajaxform-success"
-    error_marker: str = "form#viewad-contact-modal-form .outcomebox-error"
+    success_marker: str = "form#viewad-contact-form .ajaxform-success"
+    error_marker: str = "form#viewad-contact-form .outcomebox-error"
 
 
 SELECTORS = _Selectors()
@@ -163,7 +163,7 @@ class KleinanzeigenFiller:
                 if file_input.count() == 0:
                     raise SelectorMissingError(
                         f"{self.platform}: contact form does not support attachments "
-                        f"(no input[type=file] under form#viewad-contact-modal-form). "
+                        f"(no input[type=file] under form#viewad-contact-form). "
                         f"Remove '{self.platform}' from "
                         f"profile.attachments.per_platform, or rely on the default "
                         f"list only when applying to platforms that accept files."
@@ -207,10 +207,12 @@ class KleinanzeigenFiller:
             )
 
     def _reveal_contact_form(self, pg: Any) -> None:
-        # The modal form is hidden by default (mfp-hide). The trigger
-        # button shows it inline for authenticated users; for unauth
-        # users the trigger raises a login modal — _guard_login has
-        # already redirected those flows.
+        # Inline form is visible by default for authenticated users, so
+        # the early-exit below covers the common path. The trigger
+        # fallback survives for DOM variants where the inline form is
+        # not pre-rendered; if the trigger reveals the modal form
+        # instead of the inline one, the wait_for below times out and
+        # we surface FormNotFoundError loudly.
         if pg.locator(SELECTORS.form).first.is_visible():
             return
 

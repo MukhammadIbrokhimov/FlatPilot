@@ -189,6 +189,107 @@ def test_backfill_existing_rows(tmp_db):
     assert (mc, ac, lc) == (1, 1, 1)
 
 
+def _build_legacy_pre_saved_searches_db(db_path):
+    """Schema predating BOTH the saved-searches columns AND the user_id PR.
+
+    Reproduces FlatPilot-a9l: very old DBs that never ran the COLUMNS forward
+    migration that added matches.matched_saved_searches_json and
+    applications.triggered_by_saved_search. The rebuild migration's INSERT
+    SELECT must add these columns first or skip them.
+    """
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.executescript("""
+        CREATE TABLE flats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            external_id TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            listing_url TEXT NOT NULL,
+            title TEXT NOT NULL,
+            scraped_at TEXT NOT NULL,
+            first_seen_at TEXT NOT NULL,
+            UNIQUE (platform, external_id)
+        );
+        CREATE TABLE matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            flat_id INTEGER NOT NULL REFERENCES flats(id) ON DELETE CASCADE,
+            profile_version_hash TEXT NOT NULL,
+            decision TEXT NOT NULL CHECK (decision IN ('match', 'reject', 'skipped')),
+            decision_reasons_json TEXT NOT NULL DEFAULT '[]',
+            decided_at TEXT NOT NULL,
+            notified_at TEXT,
+            notified_channels_json TEXT,
+            UNIQUE (flat_id, profile_version_hash, decision)
+        );
+        CREATE TABLE applications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            flat_id INTEGER NOT NULL REFERENCES flats(id) ON DELETE CASCADE,
+            platform TEXT NOT NULL,
+            listing_url TEXT NOT NULL,
+            title TEXT NOT NULL,
+            rent_warm_eur REAL,
+            rooms REAL,
+            size_sqm REAL,
+            district TEXT,
+            applied_at TEXT NOT NULL,
+            method TEXT NOT NULL CHECK (method IN ('manual', 'auto')),
+            message_sent TEXT,
+            attachments_sent_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL CHECK (
+                status IN ('submitted', 'failed', 'viewing_invited', 'rejected', 'no_response')
+            ),
+            response_received_at TEXT,
+            response_text TEXT,
+            notes TEXT
+        );
+        CREATE TABLE apply_locks (
+            flat_id INTEGER PRIMARY KEY,
+            acquired_at TEXT NOT NULL,
+            pid INTEGER NOT NULL
+        );
+    """)
+    conn.execute(
+        "INSERT INTO flats (external_id, platform, listing_url, title,"
+        " scraped_at, first_seen_at)"
+        " VALUES ('ext1', 'wg-gesucht', 'https://example.com/1', 'Test flat',"
+        " '2026-01-01', '2026-01-01')"
+    )
+    conn.execute(
+        "INSERT INTO matches (flat_id, profile_version_hash, decision, decided_at)"
+        " VALUES (1, 'hashA', 'match', '2026-01-01')"
+    )
+    conn.execute(
+        "INSERT INTO applications (flat_id, platform, listing_url, title,"
+        " applied_at, method, status)"
+        " VALUES (1, 'wg-gesucht', 'https://example.com/1', 'Test flat',"
+        " '2026-01-02', 'manual', 'submitted')"
+    )
+    conn.close()
+
+
+def test_backfill_from_legacy_pre_saved_searches_db(tmp_db):
+    """Rebuild must succeed on DBs that lack the saved-searches columns."""
+    _build_legacy_pre_saved_searches_db(tmp_db)
+    init_db()
+    conn = get_conn()
+    (m_uid,) = conn.execute("SELECT user_id FROM matches WHERE id = 1").fetchone()
+    assert m_uid == 1
+    (m_saved,) = conn.execute(
+        "SELECT matched_saved_searches_json FROM matches WHERE id = 1"
+    ).fetchone()
+    assert m_saved == "[]"
+    (a_uid,) = conn.execute("SELECT user_id FROM applications WHERE id = 1").fetchone()
+    assert a_uid == 1
+    (a_trig,) = conn.execute(
+        "SELECT triggered_by_saved_search FROM applications WHERE id = 1"
+    ).fetchone()
+    assert a_trig is None
+    (mc,) = conn.execute("SELECT COUNT(*) FROM matches").fetchone()
+    (ac,) = conn.execute("SELECT COUNT(*) FROM applications").fetchone()
+    assert (mc, ac) == (1, 1)
+
+
 def test_rebuild_user_scoped_tables_idempotent(tmp_db):
     _build_pre_migration_db(tmp_db)
     init_db()

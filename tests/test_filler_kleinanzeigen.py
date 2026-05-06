@@ -17,6 +17,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from flatpilot.fillers import get_filler
 from flatpilot.fillers.base import (
+    ListingExpiredError,
     NotAuthenticatedError,
     SelectorMissingError,
     SubmitVerificationError,
@@ -275,6 +276,49 @@ def test_fill_login_redirect_raises_not_authenticated(fake_session):
 
     filler = KleinanzeigenFiller()
     with pytest.raises(NotAuthenticatedError, match="m-einloggen"):
+        filler.fill(
+            listing_url=_LISTING_URL,
+            message="Hallo.",
+            attachments=[],
+            submit=False,
+        )
+
+
+def test_fill_raises_listing_expired_when_redirected_to_category(fake_session):
+    # FlatPilot-tgw: a deleted listing redirects to the category page
+    # (e.g. /s-wohnung-mieten/neukoelln/c203l3386). The page returns 200
+    # so response.status checks miss it; the inline contact form is also
+    # not on the category page. Detect via the URL pattern: real listing
+    # URLs contain '/s-anzeige/'.
+    fake_session.url = (
+        "https://www.kleinanzeigen.de/s-wohnung-mieten/neukoelln/c203l3386"
+    )
+
+    filler = KleinanzeigenFiller()
+    with pytest.raises(ListingExpiredError, match="listing no longer at"):
+        filler.fill(
+            listing_url=_LISTING_URL,
+            message="Hallo.",
+            attachments=[],
+            submit=False,
+        )
+
+
+@pytest.mark.parametrize("status", [404, 410])
+def test_fill_raises_listing_expired_on_4xx_gone_status(fake_session, status):
+    # If the platform returns 404 / 410 for the listing URL, the listing
+    # is gone — classify as expired so the orchestrator does not record
+    # it as a real failure that triggers a platform cooldown.
+    def goto_with_status(url, **kwargs):
+        fake_session._goto_calls.append(url)
+        response = MagicMock()
+        response.status = status
+        return response
+
+    fake_session.goto = goto_with_status  # type: ignore[method-assign]
+
+    filler = KleinanzeigenFiller()
+    with pytest.raises(ListingExpiredError, match=str(status)):
         filler.fill(
             listing_url=_LISTING_URL,
             message="Hallo.",

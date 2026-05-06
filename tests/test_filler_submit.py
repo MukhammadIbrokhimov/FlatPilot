@@ -20,7 +20,7 @@ from unittest.mock import MagicMock
 import pytest
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
-from flatpilot.fillers.base import SubmitVerificationError
+from flatpilot.fillers.base import ListingExpiredError, SubmitVerificationError
 from flatpilot.fillers.wg_gesucht import (
     SELECTORS,
     SUBMIT_ADVISORY_SELECTORS,
@@ -325,6 +325,48 @@ def test_fill_submit_timeout_without_advisory_raises_submit_verification(fake_se
         )
 
     assert fake_session.submit_locator.click_calls == 1
+
+
+def test_fill_raises_listing_expired_when_contact_cta_missing(monkeypatch):
+    # FlatPilot-tgw: WG-Gesucht serves a 200 page with no "Nachricht senden"
+    # anchor when a listing is no longer accepting messages (deactivated /
+    # rented / paused). The previous behaviour raised FormNotFoundError,
+    # which the orchestrator recorded as a real failure, locking the
+    # platform under a 120s cooldown. We now classify as ListingExpiredError
+    # so the orchestrator can route it to the auto_skipped path.
+    page = _FakePage(on_form_already_visible=False)
+    # No contact_cta locator → count == 0 path in _reveal_contact_form.
+    monkeypatch.setattr("flatpilot.fillers.wg_gesucht.polite_session", lambda c: _Ctx())
+    monkeypatch.setattr("flatpilot.fillers.wg_gesucht.session_page", lambda c: _PageCtx(page))
+
+    filler = WGGesuchtFiller()
+    with pytest.raises(ListingExpiredError, match="contact CTA"):
+        filler.fill(
+            listing_url="https://www.wg-gesucht.de/wohnungen-in-Berlin-Britz.6194073.html",
+            message="Hallo.",
+            attachments=[],
+            submit=False,
+        )
+
+
+@pytest.mark.parametrize("status", [404, 410])
+def test_fill_raises_listing_expired_on_4xx_gone_status(fake_session, status):
+    def goto_with_status(url, **kwargs):
+        fake_session._goto_calls.append(url)
+        response = MagicMock()
+        response.status = status
+        return response
+
+    fake_session.goto = goto_with_status  # type: ignore[method-assign]
+
+    filler = WGGesuchtFiller()
+    with pytest.raises(ListingExpiredError, match=str(status)):
+        filler.fill(
+            listing_url="https://www.wg-gesucht.de/wohnungen-in-Berlin-Britz.6194073.html",
+            message="Hallo.",
+            attachments=[],
+            submit=False,
+        )
 
 
 def test_fill_submit_timeout_after_dismissal_raises_submit_verification(fake_session):

@@ -176,6 +176,87 @@ def test_completeness_failure_writes_skip_row(tmp_db):
     assert row["triggered_by_saved_search"] == "ss1"
 
 
+def test_skips_flat_with_recent_listing_expired_row(tmp_db):
+    # FlatPilot-tgw: a flat that was already classified as expired within
+    # the last 7 days should not be retried — running the filler again
+    # would just navigate, hit the same redirect/missing-CTA, and burn a
+    # browser session. The auto-apply SELECT excludes such flats.
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import patch
+
+    from flatpilot.auto_apply import run_pipeline_apply
+    from flatpilot.profile import profile_hash
+
+    profile = _profile_with_one_auto_search()
+    save_profile(profile)
+    flat_id = _seed_flat(tmp_db)
+    _seed_match(
+        tmp_db,
+        flat_id=flat_id,
+        profile_hash=profile_hash(profile),
+        matched_saved_searches=["ss1"],
+    )
+    recent = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+    tmp_db.execute(
+        "INSERT INTO applications (flat_id, platform, listing_url, title, "
+        "applied_at, method, attachments_sent_json, status, notes) "
+        "VALUES (?, 'wg-gesucht', 'https://x', 'T', ?, 'auto', '[]', 'failed', "
+        "'auto_skipped: listing_expired (redirected)')",
+        (flat_id, recent),
+    )
+
+    with patch("flatpilot.auto_apply.apply_to_flat") as mocked, \
+         patch("flatpilot.auto_apply.completeness_ok", return_value=(True, None)):
+        run_pipeline_apply(profile, Console())
+    # If the SELECT exclusion is missing, _try_flat would proceed to
+    # apply_to_flat once because completeness is mocked OK, cooldown is
+    # 0 (auto_skipped rows excluded), and failures-for-flat is 0
+    # (auto_skipped rows excluded). assert_not_called proves the SELECT
+    # itself dropped the flat from the result set.
+    mocked.assert_not_called()
+
+
+def test_retries_flat_with_old_listing_expired_row(tmp_db):
+    # FlatPilot-tgw: TTL on the listing_expired exclusion ensures a real
+    # selector regression heals once the selectors are fixed. After 7
+    # days, the flat is eligible again — the filler will reclassify if
+    # the listing is genuinely gone, or apply normally if the prior
+    # 'expired' verdict was caused by a since-fixed selector regression.
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import patch
+
+    from flatpilot.apply import ApplyOutcome
+    from flatpilot.auto_apply import run_pipeline_apply
+    from flatpilot.profile import profile_hash
+
+    profile = _profile_with_one_auto_search()
+    save_profile(profile)
+    flat_id = _seed_flat(tmp_db)
+    _seed_match(
+        tmp_db,
+        flat_id=flat_id,
+        profile_hash=profile_hash(profile),
+        matched_saved_searches=["ss1"],
+    )
+    old = (datetime.now(UTC) - timedelta(days=8)).isoformat()
+    tmp_db.execute(
+        "INSERT INTO applications (flat_id, platform, listing_url, title, "
+        "applied_at, method, attachments_sent_json, status, notes) "
+        "VALUES (?, 'wg-gesucht', 'https://x', 'T', ?, 'auto', '[]', 'failed', "
+        "'auto_skipped: listing_expired (redirected)')",
+        (flat_id, old),
+    )
+
+    with patch("flatpilot.auto_apply.apply_to_flat") as mocked, \
+         patch("flatpilot.auto_apply.completeness_ok", return_value=(True, None)):
+        mocked.return_value = ApplyOutcome(
+            status="submitted", application_id=1, fill_report=None
+        )
+        run_pipeline_apply(profile, Console())
+
+    mocked.assert_called_once()
+
+
 def test_run_pipeline_once_now_includes_apply_stage(tmp_db, monkeypatch):
     from flatpilot.pipeline import run_pipeline_once
 

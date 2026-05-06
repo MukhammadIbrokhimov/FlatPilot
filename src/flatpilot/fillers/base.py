@@ -32,6 +32,25 @@ class FormNotFoundError(FillError):
     """Couldn't locate the contact form on the listing page."""
 
 
+class ListingExpiredError(FillError):
+    """Listing is no longer reachable on the platform.
+
+    Distinct from :class:`FormNotFoundError` (selectors broken on a live
+    listing) so the apply orchestrator can record the row as
+    ``auto_skipped: listing_expired (...)``. That note prefix piggybacks
+    on the existing ``auto_skipped:`` exclusions in
+    :func:`flatpilot.auto_apply.cooldown_remaining_sec` and
+    :func:`flatpilot.auto_apply.failures_for_flat`, so an expired listing
+    does not start a 120s platform cooldown or count toward
+    ``max_failures_per_flat``.
+
+    Raised on HTTP 404 / 410 from any platform, on a Kleinanzeigen URL
+    that no longer matches ``/s-anzeige/`` (the platform redirects deleted
+    listings to a category page that returns 200), and on WG-Gesucht
+    pages that load successfully but render no contact CTA.
+    """
+
+
 class SelectorMissingError(FillError):
     """A required form-field selector did not match anything on the page."""
 

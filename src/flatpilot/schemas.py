@@ -13,7 +13,7 @@ SQLite quirks worth remembering:
 
 from __future__ import annotations
 
-from flatpilot.database import SCHEMAS
+from flatpilot.database import COLUMNS, SCHEMAS
 
 USERS_CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS users (
@@ -132,6 +132,18 @@ CREATE TABLE IF NOT EXISTS apply_locks (
 """
 
 SCHEMAS["apply_locks"] = APPLY_LOCKS_CREATE_SQL
+
+# Forward-migration columns (FlatPilot-a9l): legacy DBs created before the
+# saved-searches feature predate these CREATE TABLE columns, and the
+# user_id rebuild migration's INSERT SELECT reads from them. ensure_columns
+# must run before _rebuild_user_scoped_tables so the source tables have
+# them before the rebuild copies rows.
+COLUMNS["matches"] = {
+    "matched_saved_searches_json": "TEXT NOT NULL DEFAULT '[]'",
+}
+COLUMNS["applications"] = {
+    "triggered_by_saved_search": "TEXT",
+}
 
 APPLICATIONS_METHOD_APPLIED_AT_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_applications_method_applied_at

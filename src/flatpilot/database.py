@@ -190,12 +190,16 @@ def init_db() -> None:
         if not name.startswith("idx_"):
             conn.execute(create_sql)
     ensure_default_user(conn)
+    # Apply forward-migration columns BEFORE rebuilding user-scoped tables
+    # (FlatPilot-a9l): the rebuild's INSERT SELECT reads
+    # matches.matched_saved_searches_json and applications.triggered_by_saved_search;
+    # legacy DBs predate those, so add them via ALTER TABLE first.
+    ensure_columns()
     _rebuild_user_scoped_tables(conn)
     # Second pass: indexes (tables now have user_id, so index creation succeeds).
     for name, create_sql in SCHEMAS.items():
         if name.startswith("idx_"):
             conn.execute(create_sql)
-    ensure_columns()
 
 
 def ensure_columns() -> None:

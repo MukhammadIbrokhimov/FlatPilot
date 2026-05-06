@@ -197,6 +197,34 @@ def test_apply_live_filler_failure_writes_failed_row_and_raises(tmp_db, tmp_path
     assert "session expired" in row["notes"]
 
 
+def test_apply_listing_expired_records_auto_skipped_listing_expired_note(
+    tmp_db, tmp_path, monkeypatch
+):
+    # FlatPilot-tgw: when the filler raises ListingExpiredError, the
+    # orchestrator must record the row with notes prefixed by
+    # 'auto_skipped: listing_expired'. This makes the row invisible to
+    # cooldown_remaining_sec and failures_for_flat (existing
+    # 'auto_skipped:%' exclusions), and visible to run_pipeline_apply's
+    # listing-expired SELECT exclusion. The exception still re-raises so
+    # the CLI / dashboard exit path is unchanged.
+    from flatpilot.fillers.base import ListingExpiredError
+
+    _profile_for_test(tmp_path)
+    _write_template(tmp_path)
+    flat_id = _insert_flat(tmp_db)
+    _stub_filler(monkeypatch, raises=ListingExpiredError("redirected to category"))
+
+    with pytest.raises(ListingExpiredError):
+        apply_to_flat(flat_id, dry_run=False)
+
+    row = tmp_db.execute(
+        "SELECT status, notes FROM applications WHERE flat_id = ?", (flat_id,)
+    ).fetchone()
+    assert row["status"] == "failed"
+    assert row["notes"].startswith("auto_skipped: listing_expired")
+    assert "redirected to category" in row["notes"]
+
+
 def test_apply_unknown_flat_id_raises_lookup_error_no_row(tmp_db, tmp_path, monkeypatch):
     _profile_for_test(tmp_path)
     _write_template(tmp_path)

@@ -40,7 +40,7 @@ from flatpilot.compose import compose_anschreiben
 from flatpilot.database import get_conn, init_db
 from flatpilot.errors import FlatPilotError, ProfileMissingError
 from flatpilot.fillers import get_filler
-from flatpilot.fillers.base import FillError, FillReport
+from flatpilot.fillers.base import FillError, FillReport, ListingExpiredError
 from flatpilot.profile import Profile, load_profile
 from flatpilot.users import DEFAULT_USER_ID
 
@@ -296,6 +296,18 @@ def apply_to_flat(
                 screenshot_dir=screenshot_dir,
             )
         except FillError as exc:
+            # ListingExpiredError is recorded with the ``auto_skipped:``
+            # prefix so the existing exclusions in
+            # ``cooldown_remaining_sec`` and ``failures_for_flat`` cover
+            # it — a deleted listing is not a platform-throttle event and
+            # should neither start a 120s cooldown nor count toward
+            # max_failures_per_flat. ``run_pipeline_apply`` also matches
+            # on this prefix to drop the flat from the auto-apply queue
+            # for 7 days. FlatPilot-tgw.
+            if isinstance(exc, ListingExpiredError):
+                notes = f"auto_skipped: listing_expired ({exc})"
+            else:
+                notes = str(exc)
             application_id = _record_application(
                 conn,
                 profile=profile,
@@ -303,7 +315,7 @@ def apply_to_flat(
                 message=message,
                 attachments=attachments,
                 status="failed",
-                notes=str(exc),
+                notes=notes,
                 method=method,
                 saved_search=saved_search,
                 user_id=user_id,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import flatpilot.fillers.kleinanzeigen  # noqa: F401
 import flatpilot.fillers.wg_gesucht  # noqa: F401
@@ -32,6 +32,13 @@ _OVERLAY_FIELDS_SCALAR = (
 )
 
 PAUSE_PATH = APP_DIR / "PAUSE"
+
+# How long a flat stays excluded from auto-apply after being classified
+# as expired by a filler. Long enough that re-trying a deleted listing
+# every run is rare; short enough that a hypothetical filler-selector
+# regression heals automatically once the selector is fixed (without
+# requiring a manual DB cleanup pass). FlatPilot-tgw.
+LISTING_EXPIRED_TTL = timedelta(days=7)
 
 
 def overlay_profile(profile: Profile, saved_search: SavedSearch | None) -> Profile:
@@ -148,6 +155,7 @@ def run_pipeline_apply(
     conn = get_conn()
     phash = profile_hash(profile)
 
+    expired_threshold = (datetime.now(UTC) - LISTING_EXPIRED_TTL).isoformat()
     rows = conn.execute(
         """
         SELECT m.id AS match_id,
@@ -166,9 +174,18 @@ def run_pipeline_apply(
               AND a.method = 'auto'
               AND a.status = 'submitted'
           )
+          AND NOT EXISTS (
+            SELECT 1 FROM applications a
+            WHERE a.flat_id = m.flat_id
+              AND a.user_id = ?
+              AND a.method = 'auto'
+              AND a.status = 'failed'
+              AND a.notes LIKE 'auto_skipped: listing_expired%'
+              AND a.applied_at >= ?
+          )
         ORDER BY m.decided_at ASC
         """,
-        (phash, user_id, user_id),
+        (phash, user_id, user_id, user_id, expired_threshold),
     ).fetchall()
 
     saved_search_by_name = {ss.name: ss for ss in profile.saved_searches}

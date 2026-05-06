@@ -53,6 +53,7 @@ from flatpilot.fillers.base import (
     FillError,  # noqa: F401 — re-exported for callers that catch the base class
     FillReport,
     FormNotFoundError,
+    ListingExpiredError,
     NotAuthenticatedError,
     SelectorMissingError,
     SubmitVerificationError,
@@ -109,6 +110,11 @@ SUBMIT_NAV_WAIT_MS = 7_000
 FORM_WAIT_MS = 5_000
 FIELD_WAIT_MS = 3_000
 
+# Real listing detail URLs always contain this segment. Deleted ads 301
+# to a category page like /s-wohnung-mieten/<location>/<cat-loc-id>; the
+# category page returns 200 so a status check alone misses it.
+LISTING_URL_MARKER = "/s-anzeige/"
+
 
 @register
 class KleinanzeigenFiller:
@@ -143,6 +149,11 @@ class KleinanzeigenFiller:
             response = pg.goto(listing_url, wait_until="domcontentloaded")
             if response is not None:
                 check_rate_limit(response.status, self.platform)
+                if response.status in (404, 410):
+                    raise ListingExpiredError(
+                        f"{self.platform}: listing returned HTTP {response.status} "
+                        f"({listing_url})"
+                    )
                 if response.status >= 400:
                     raise FormNotFoundError(
                         f"{self.platform}: listing returned HTTP {response.status} "
@@ -150,6 +161,11 @@ class KleinanzeigenFiller:
                     )
 
             self._guard_login(pg)
+            if LISTING_URL_MARKER not in (pg.url or ""):
+                raise ListingExpiredError(
+                    f"{self.platform}: listing no longer at {listing_url} — "
+                    f"redirected to {pg.url}"
+                )
             self._reveal_contact_form(pg)
             contact_url = pg.url
 

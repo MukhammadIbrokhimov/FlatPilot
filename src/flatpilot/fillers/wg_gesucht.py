@@ -41,7 +41,8 @@ from flatpilot.fillers import register
 from flatpilot.fillers.base import (
     FillError,  # noqa: F401 — re-exported for callers that catch the base class
     FillReport,
-    FormNotFoundError,
+    FormNotFoundError,  # noqa: F401 — re-exported for backwards compatibility
+    ListingExpiredError,
     NotAuthenticatedError,
     SelectorMissingError,
     SubmitVerificationError,
@@ -152,6 +153,11 @@ class WGGesuchtFiller:
             response = pg.goto(listing_url, wait_until="domcontentloaded")
             if response is not None:
                 check_rate_limit(response.status, self.platform)
+                if response.status in (404, 410):
+                    raise ListingExpiredError(
+                        f"{self.platform}: listing returned HTTP {response.status} "
+                        f"({listing_url})"
+                    )
                 if response.status >= 400:
                     raise FormNotFoundError(
                         f"{self.platform}: listing returned HTTP {response.status} "
@@ -235,7 +241,16 @@ class WGGesuchtFiller:
 
         cta = pg.locator(SELECTORS.contact_cta).first
         if cta.count() == 0:
-            raise FormNotFoundError(
+            # WG-Gesucht serves a 200 page with no "Nachricht senden"
+            # anchor when a listing is deactivated / rented / paused —
+            # that's the dominant cause of this branch in practice.
+            # Classify as ListingExpiredError so the orchestrator records
+            # ``auto_skipped: listing_expired`` (no platform cooldown,
+            # excluded from auto-apply for 7 days). The TTL exclusion
+            # means a hypothetical selector regression on this filler
+            # heals on its own once the selector is fixed, rather than
+            # poisoning the database permanently.
+            raise ListingExpiredError(
                 f"{self.platform}: no contact CTA matching "
                 f"{SELECTORS.contact_cta!r} at {pg.url}"
             )

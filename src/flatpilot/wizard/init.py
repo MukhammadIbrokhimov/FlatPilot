@@ -17,9 +17,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import subprocess
 from datetime import date
 from pathlib import Path
+from string import Template
 from typing import Any
 
 from pydantic import ValidationError
@@ -521,6 +524,9 @@ def run(console: Console | None = None) -> Path | None:
 
     profile = _saved_searches_menu(out, profile)
 
+    ensure_dirs()
+    _anschreiben_preview_step(out, profile)
+
     out.print(
         f"[bold]{profile.city}[/bold] · {profile.radius_km} km · "
         f"€{profile.rent_min_warm}–{profile.rent_max_warm} warm · "
@@ -531,10 +537,111 @@ def run(console: Console | None = None) -> Path | None:
         out.print("[yellow]Aborted; existing profile (if any) untouched.[/yellow]")
         return None
 
-    ensure_dirs()
     save_profile(profile)
     out.print(f"[green]Wrote {PROFILE_PATH}[/green]")
     return PROFILE_PATH
+
+
+_ANSCHREIBEN_PREVIEW_FLAT: dict[str, Any] = {
+    "title": "Beispielwohnung 2 Zi",
+    "district": "Mitte",
+    "rent_warm_eur": 750,
+    "listing_url": "https://example/123",
+    "rooms": 2,
+}
+
+
+def _platforms_needing_template(profile: Profile) -> list[str]:
+    """Sorted union of saved-search platforms that have a registered filler.
+
+    A saved_search with ``platforms=[]`` means "any platform"; expand to every
+    apply-capable platform. Platforms without a filler (inberlinwohnen,
+    immoscout24) are excluded — apply isn't supported there, so a template is
+    not load-bearing.
+    """
+    import flatpilot.fillers.kleinanzeigen  # noqa: F401
+    import flatpilot.fillers.wg_gesucht  # noqa: F401
+    from flatpilot.fillers import all_fillers
+
+    apply_capable = {f.platform for f in all_fillers()}
+    if not profile.saved_searches:
+        return []
+    union: set[str] = set()
+    for ss in profile.saved_searches:
+        if ss.platforms:
+            union.update(p for p in ss.platforms if p in apply_capable)
+        else:
+            union.update(apply_capable)
+    return sorted(union)
+
+
+def _anschreiben_preview_step(out: Console, profile: Profile) -> None:
+    """Show the rendered Anschreiben for each apply-capable platform."""
+    platforms = _platforms_needing_template(profile)
+    if not platforms:
+        return
+
+    from flatpilot import compose
+
+    out.rule("Anschreiben (cover letter) preview")
+    out.print(
+        "[dim]This is the message FlatPilot will send to landlords for "
+        "matches against your saved searches.[/dim]"
+    )
+
+    example_text = compose.example_template_path().read_text(encoding="utf-8")
+
+    for platform in platforms:
+        target = compose.TEMPLATES_DIR / f"{platform}.md"
+        out.print(f"\n[bold]{platform}[/bold]")
+        if target.is_file():
+            try:
+                rendered = compose.compose_anschreiben(
+                    profile, platform, _ANSCHREIBEN_PREVIEW_FLAT,
+                    templates_dir=compose.TEMPLATES_DIR,
+                )
+            except compose.TemplateError as exc:
+                out.print(
+                    f"[red]Existing template at {target} failed to render: {exc}[/red]"
+                )
+                out.print(f"[yellow]Edit it manually at {target}.[/yellow]")
+                continue
+            out.print(f"[dim]Existing template at {target}:[/dim]")
+            out.print(rendered)
+            if Confirm.ask("Keep current Anschreiben?", default=True):
+                continue
+            _open_in_editor(out, target)
+            continue
+
+        ctx = compose.build_context(profile, _ANSCHREIBEN_PREVIEW_FLAT)
+        rendered = Template(example_text).substitute(ctx)
+        out.print(f"[dim]Shipped default (will be saved to {target}):[/dim]")
+        out.print(rendered)
+        if Confirm.ask("Use this default Anschreiben?", default=True):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(example_text, encoding="utf-8")
+            out.print(f"[green]Wrote {target}[/green]")
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _open_in_editor(out, target)
+
+
+def _open_in_editor(out: Console, path: Path) -> None:
+    editor = os.environ.get("EDITOR")
+    if not editor:
+        out.print(
+            f"[yellow]$EDITOR not set. Create or edit the template manually at "
+            f"{path} before running flatpilot apply.[/yellow]"
+        )
+        return
+    out.print(f"[dim]Opening {path} in $EDITOR ({editor})…[/dim]")
+    try:
+        subprocess.call([editor, str(path)])
+    except OSError as exc:
+        out.print(
+            f"[yellow]Could not launch $EDITOR ({exc}). Edit manually at {path}."
+            "[/yellow]"
+        )
 
 
 def _load_existing(out: Console) -> Profile | None:

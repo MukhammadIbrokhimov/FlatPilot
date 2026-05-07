@@ -278,6 +278,88 @@ def test_check_smtp_enabled_configured_returns_ok(tmp_db, monkeypatch):
     assert "set" in detail
 
 
+# --- _check_per_platform_templates ------------------------------------
+
+
+def test_check_templates_no_profile_returns_optional(tmp_db):
+    status, detail = doctor._check_per_platform_templates()
+    assert status == "optional"
+    assert "no profile" in detail
+
+
+def test_check_templates_no_saved_searches_returns_ok(tmp_db):
+    from flatpilot.profile import Profile, save_profile
+
+    save_profile(Profile.load_example())
+    status, detail = doctor._check_per_platform_templates()
+    assert status == "OK"
+    assert "no saved searches" in detail
+
+
+def test_check_templates_missing_template_returns_missing(tmp_db):
+    from flatpilot.profile import Profile, SavedSearch, save_profile
+
+    profile = Profile.load_example().model_copy(
+        update={
+            "saved_searches": [SavedSearch(name="x", platforms=["wg-gesucht"])],
+        }
+    )
+    save_profile(profile)
+    status, detail = doctor._check_per_platform_templates()
+    assert status == "MISSING"
+    assert "wg-gesucht" in detail
+    assert "flatpilot init" in detail
+
+
+def test_check_templates_present_returns_ok(tmp_db):
+    from flatpilot import compose
+    from flatpilot.profile import Profile, SavedSearch, save_profile
+
+    profile = Profile.load_example().model_copy(
+        update={
+            "saved_searches": [SavedSearch(name="x", platforms=["wg-gesucht"])],
+        }
+    )
+    save_profile(profile)
+    compose.TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+    (compose.TEMPLATES_DIR / "wg-gesucht.md").write_text("Hi $title", encoding="utf-8")
+
+    status, detail = doctor._check_per_platform_templates()
+    assert status == "OK"
+    assert "1 template" in detail
+
+
+def test_check_templates_skips_platforms_without_filler(tmp_db):
+    """inberlinwohnen has no registered filler — its missing template is not flagged."""
+    from flatpilot.profile import Profile, SavedSearch, save_profile
+
+    profile = Profile.load_example().model_copy(
+        update={
+            "saved_searches": [SavedSearch(name="x", platforms=["inberlinwohnen"])],
+        }
+    )
+    save_profile(profile)
+    status, detail = doctor._check_per_platform_templates()
+    assert status == "OK"
+    assert "no apply-capable" in detail
+
+
+def test_check_templates_empty_platforms_expands_to_all_fillers(tmp_db):
+    """saved_search.platforms=[] → 'any' → templates needed for every filler."""
+    from flatpilot.profile import Profile, SavedSearch, save_profile
+
+    profile = Profile.load_example().model_copy(
+        update={
+            "saved_searches": [SavedSearch(name="any", platforms=[])],
+        }
+    )
+    save_profile(profile)
+    status, detail = doctor._check_per_platform_templates()
+    assert status == "MISSING"
+    assert "wg-gesucht" in detail
+    assert "kleinanzeigen" in detail
+
+
 def test_doctor_handles_malformed_profile(tmp_db):
     from io import StringIO
 

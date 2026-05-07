@@ -34,3 +34,15 @@ class UnknownCityError(FlatPilotError, ValueError):
     platform-specific) but they all raise this when the lookup misses,
     so the orchestrator can render one consistent error message.
     """
+
+
+class UnsupportedPlatformError(FlatPilotError, LookupError):
+    """Raised when ``flatpilot apply`` runs against a platform with no filler.
+
+    inberlinwohnen.de and ImmoScout24 are intentionally scrape+notify only:
+    the former deeplinks each listing to a different landlord's site (one
+    filler per operator would be required), the latter is RSS-only by
+    design to avoid the fragile HTML path FlatPilot-l9hm / FlatPilot-h7q
+    removed. Subclasses ``LookupError`` so the existing ``except LookupError``
+    branch in :func:`flatpilot.cli.apply` exits 2 with the friendly message.
+    """

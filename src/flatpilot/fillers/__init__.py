@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from flatpilot.errors import UnsupportedPlatformError
 from flatpilot.fillers.base import (
     Filler,
     FillError,
@@ -46,9 +47,12 @@ def get_filler(platform: str) -> type[Filler]:
     try:
         return _REGISTRY[platform]
     except KeyError as exc:
-        raise KeyError(
-            f"No filler registered for platform {platform!r} "
-            f"(known: {sorted(_REGISTRY)})"
+        known = sorted(_REGISTRY)
+        raise UnsupportedPlatformError(
+            f"auto-apply isn't supported on {platform!r}. FlatPilot can scrape "
+            f"and notify for this platform, but cannot fill its contact form — "
+            f"open the listing in your browser and apply manually. "
+            f"(apply-capable platforms: {known})"
         ) from exc
 
 
@@ -64,6 +68,7 @@ __all__ = [
     "NotAuthenticatedError",
     "SelectorMissingError",
     "SubmitVerificationError",
+    "UnsupportedPlatformError",
     "all_fillers",
     "get_filler",
     "register",

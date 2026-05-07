@@ -20,6 +20,7 @@ Under active development. Phase 1 MVP is in progress — see the [Beads](https:/
   - Phase 3 — inberlinwohnen.de (Berlin municipal, WBS-heavy)
   - Phase 4 — ImmoScout24 (via RSS feeds from saved searches — no scraping)
   - Phase 5+ — Immowelt, Immonet, other municipal sites
+- **Auto-apply support:** WG-Gesucht and Kleinanzeigen only. inberlinwohnen.de and ImmoScout24 are **scrape + notify only** — `flatpilot apply <id>` and the auto-apply queue both skip them with a clear message. inberlinwohnen deeplinks each listing to a different landlord's site (degewo, Howoge, Gesobau, etc.), each with its own form; ImmoScout24 is intentionally RSS-only to avoid the fragile HTML path. Open those listings in your browser and apply manually.
 
 ## Install
 

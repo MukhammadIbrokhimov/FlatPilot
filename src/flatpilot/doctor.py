@@ -153,6 +153,40 @@ def _check_saved_searches() -> tuple[str, str]:
     return "OK", f"{len(active)} active ({', '.join(active)})"
 
 
+def _check_per_platform_templates() -> tuple[str, str]:
+    """Each platform listed in any saved_search needs an Anschreiben template.
+
+    A saved_search with ``platforms=[]`` means "any" — expand to every
+    apply-capable platform. Platforms without a registered filler are skipped
+    (apply isn't supported there, so a missing template is not load-bearing).
+    """
+    profile, err = _safe_load_profile()
+    if err is not None:
+        return "optional", err
+    if profile is None:
+        return "optional", "no profile"
+    if not profile.saved_searches:
+        return "OK", "no saved searches"
+
+    apply_capable = {f.platform for f in all_fillers()}
+    needed: set[str] = set()
+    for ss in profile.saved_searches:
+        if ss.platforms:
+            needed.update(p for p in ss.platforms if p in apply_capable)
+        else:
+            needed.update(apply_capable)
+    if not needed:
+        return "OK", "no apply-capable platforms in saved searches"
+
+    missing = sorted(p for p in needed if not (config.TEMPLATES_DIR / f"{p}.md").is_file())
+    if missing:
+        return (
+            "MISSING",
+            f"templates missing: {', '.join(missing)} — re-run `flatpilot init`",
+        )
+    return "OK", f"{len(needed)} template(s) present"
+
+
 def _check_saved_search_notifications() -> tuple[str, str]:
     """Verify per-saved-search notification overrides reference resolvable env vars."""
     profile, err = _safe_load_profile()
@@ -285,6 +319,7 @@ CHECKS: list[tuple[str, CheckFn]] = [
     ("Auto-apply: PAUSE switch", _check_pause),
     ("Auto-apply: saved searches", _check_saved_searches),
     ("Auto-apply: saved-search notif overrides", _check_saved_search_notifications),
+    ("Auto-apply: Anschreiben templates", _check_per_platform_templates),
 ]
 
 

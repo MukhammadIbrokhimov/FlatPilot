@@ -82,6 +82,66 @@ flatpilot status                      # DB counts and last-run info
 - **inberlinwohnen.de** paginates from page 1 onwards. On a fresh install, `flatpilot scrape --platform inberlinwohnen` walks the full Wohnungsfinder feed (~22 pages, ~220 listings today) so you don't miss older inventory. In steady state, the scraper stops after page 1 once every listing on it is already in the local DB — typically one page-fetch per pass. A safety cap of 30 pages bounds the worst case.
 - **WG-Gesucht** and **Kleinanzeigen** read page 1 only — new listings surface there, and steady-state polling is the primary use case.
 
+## Auto-apply
+
+`flatpilot run` includes an auto-apply stage that submits applications to matched flats automatically. It is **opt-in per saved search** and supported on **WG-Gesucht** and **Kleinanzeigen** only (see Scope above). The engine sits behind several safety rails so a misconfigured profile cannot spam landlords.
+
+### Enable
+
+Set `auto_apply: true` on a saved search inside your profile (`~/.flatpilot/profile.json`):
+
+```json
+{
+  "saved_searches": [
+    {
+      "name": "wedding-2br",
+      "auto_apply": true,
+      "rent_max_warm": 1400,
+      "rooms_min": 2,
+      "platforms": ["wg-gesucht"]
+    }
+  ]
+}
+```
+
+A match must hit at least one saved search with `auto_apply: true` before the engine will submit. Saved searches with `auto_apply: false` (the default) still notify but never auto-submit.
+
+### Safety rails
+
+Configured under `auto_apply` in your profile; defaults are conservative:
+
+| Setting | Default | What it does |
+|---|---|---|
+| `daily_cap_per_platform` | `20` | Max submitted applications per platform per day. Auto-apply skips the flat once the cap is hit and resumes the next day. |
+| `cooldown_seconds_per_platform` | `120` | Minimum gap between submissions on the same platform. Avoids burst-submit patterns that look bot-like. |
+| `pacing_seconds_per_platform` | `0` | Optional extra spacing on top of cooldown. Use `>0` if you want slower-than-cooldown pacing. |
+| `max_failures_per_flat` | `3` | After this many consecutive filler failures on the same flat, FlatPilot stops retrying it. |
+
+A flat that the filler reports as expired is excluded from auto-apply for 7 days, so a stale or removed listing doesn't poison the queue.
+
+### Pause / resume
+
+```bash
+flatpilot pause     # creates ~/.flatpilot/PAUSE; auto-apply skips the stage entirely
+flatpilot resume    # removes the file; auto-apply resumes on the next run
+```
+
+The pause file is checked at the start of every `flatpilot run`. Manual `flatpilot apply <id>` calls ignore the pause file — it gates the *automatic* stage only.
+
+### Dry-run
+
+```bash
+flatpilot run --dry-run-apply
+```
+
+Walks the full pipeline and logs which flats would be auto-applied to, without calling any filler. Useful when you've changed saved-search rules and want to confirm the auto-apply set before going live.
+
+### Skip the stage
+
+```bash
+flatpilot run --skip-apply       # scrape + match + notify only
+```
+
 ## Configuration
 
 - `FLATPILOT_APPLY_TIMEOUT_SEC` (default `180`) — caps the dashboard's `flatpilot apply <id>` subprocess. Bump for slow Playwright runs (large attachments, slow networks).

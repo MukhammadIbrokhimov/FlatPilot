@@ -127,7 +127,7 @@ def completeness_ok(profile: Profile, flat: dict) -> tuple[bool, str | None]:
     platform = str(flat["platform"])
     try:
         get_filler(platform)
-    except KeyError:
+    except LookupError:
         return False, f"filler not registered for platform {platform!r}"
     try:
         compose_anschreiben(profile, platform, flat)

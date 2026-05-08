@@ -9,7 +9,7 @@ from typer.testing import CliRunner
 
 from flatpilot.apply import ApplyOutcome
 from flatpilot.cli import app
-from flatpilot.errors import ProfileMissingError
+from flatpilot.errors import ProfileMissingError, UnsupportedPlatformError
 from flatpilot.fillers.base import FillReport, NotAuthenticatedError
 
 
@@ -77,6 +77,28 @@ def test_apply_lookup_error_exit_two():
 
     assert result.exit_code == 2
     assert "no flat with id 999" in result.output
+
+
+def test_apply_unsupported_platform_exits_two_with_friendly_message():
+    # Replaces the prior raw KeyError surface for inberlinwohnen / immoscout24:
+    # the CLI now exits 2 (same as other LookupError causes) and prints a message
+    # explaining auto-apply isn't supported and to apply manually.
+    runner = CliRunner()
+    with patch(
+        "flatpilot.cli.apply_to_flat",
+        side_effect=UnsupportedPlatformError(
+            "auto-apply isn't supported on 'inberlinwohnen'. FlatPilot can scrape "
+            "and notify for this platform, but cannot fill its contact form — "
+            "open the listing in your browser and apply manually. "
+            "(apply-capable platforms: ['kleinanzeigen', 'wg_gesucht'])"
+        ),
+    ):
+        result = runner.invoke(app, ["apply", "5"])
+
+    assert result.exit_code == 2, result.output
+    assert "auto-apply isn't supported" in result.output
+    assert "inberlinwohnen" in result.output
+    assert "manually" in result.output
 
 
 def test_apply_no_profile_exit_one():

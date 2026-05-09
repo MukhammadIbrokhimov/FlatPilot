@@ -123,6 +123,33 @@ def failures_for_flat(
     return int(row["n"])
 
 
+def flats_over_max_failures(
+    conn: sqlite3.Connection,
+    profile: Profile,
+    user_id: int = DEFAULT_USER_ID,
+) -> int:
+    """Count distinct flats whose real auto-apply failures meet/exceed the
+    profile's ``max_failures_per_flat`` threshold (the same predicate
+    :func:`failures_for_flat` uses, applied DB-wide). Auto-skipped rows
+    are excluded — they are not filler errors."""
+    cap = profile.auto_apply.max_failures_per_flat
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS n FROM (
+          SELECT flat_id
+          FROM applications
+          WHERE method = 'auto' AND status = 'failed'
+            AND user_id = ?
+            AND (notes IS NULL OR notes NOT LIKE 'auto_skipped:%')
+          GROUP BY flat_id
+          HAVING COUNT(*) >= ?
+        )
+        """,
+        (user_id, cap),
+    ).fetchone()
+    return int(row["n"] if row is not None else 0)
+
+
 def completeness_ok(profile: Profile, flat: dict) -> tuple[bool, str | None]:
     platform = str(flat["platform"])
     try:

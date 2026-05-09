@@ -376,7 +376,7 @@ def notify(
 
 @app.command()
 def status() -> None:
-    """Show DB counts and last-run info."""
+    """Show DB counts, last-run info, and the auto-apply runtime panel."""
     from rich.console import Console
     from rich.table import Table
 
@@ -412,6 +412,74 @@ def status() -> None:
         for reason, count in sorted(s["rejected_by_reason"].items(), key=lambda x: -x[1]):
             rj.add_row(reason, str(count))
         console.print(rj)
+
+    _print_auto_apply_panel(console)
+
+
+def _print_auto_apply_panel(console) -> None:
+    """Render the Auto-apply runtime panel (FlatPilot-iwu).
+
+    Pulls live values from the same helpers the pipeline uses
+    (is_paused, daily_cap_remaining, cooldown_remaining_sec,
+    flats_over_max_failures) so the user sees exactly what auto-apply
+    will do on the next ``flatpilot run``.
+    """
+    from rich.table import Table
+
+    # Filler imports populate the registry that all_fillers() walks below.
+    import flatpilot.fillers.kleinanzeigen  # noqa: F401
+    import flatpilot.fillers.wg_gesucht  # noqa: F401
+    from flatpilot.auto_apply import (
+        PAUSE_PATH,
+        cooldown_remaining_sec,
+        daily_cap_remaining,
+        flats_over_max_failures,
+        is_paused,
+    )
+    from flatpilot.database import get_conn
+    from flatpilot.fillers import all_fillers
+    from flatpilot.profile import load_profile
+
+    panel = Table(title="Auto-apply")
+    panel.add_column("Metric")
+    panel.add_column("Value")
+
+    if is_paused():
+        panel.add_row("State", f"[yellow]PAUSED[/yellow] · {PAUSE_PATH}")
+    else:
+        panel.add_row("State", "[green]ACTIVE[/green]")
+
+    try:
+        profile = load_profile()
+    except (ValueError, OSError):
+        profile = None
+
+    if profile is None:
+        panel.add_row("Profile", "[yellow]no profile — run `flatpilot init`[/yellow]")
+        console.print(panel)
+        return
+
+    conn = get_conn()
+    apply_capable = {f.platform for f in all_fillers()}
+    platforms = sorted(set(profile.auto_apply.daily_cap_per_platform) | apply_capable)
+    for platform in platforms:
+        cap = profile.auto_apply.daily_cap_per_platform.get(platform, 0)
+        if platform not in apply_capable:
+            panel.add_row(platform, "[dim]— (no filler registered)[/dim]")
+            continue
+        if cap <= 0:
+            panel.add_row(platform, "[dim]disabled (cap=0)[/dim]")
+            continue
+        used = cap - daily_cap_remaining(conn, profile, platform)
+        wait = cooldown_remaining_sec(conn, profile, platform)
+        cooldown_str = "ready" if wait <= 0 else f"cooldown {wait:.0f}s"
+        panel.add_row(platform, f"{used} / {cap} today · {cooldown_str}")
+
+    panel.add_row(
+        "Flats over max failures",
+        str(flats_over_max_failures(conn, profile)),
+    )
+    console.print(panel)
 
 
 @app.command()

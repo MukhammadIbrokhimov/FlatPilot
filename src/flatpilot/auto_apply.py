@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import time
 from datetime import UTC, datetime, timedelta
 
 import flatpilot.fillers.kleinanzeigen  # noqa: F401
@@ -172,6 +173,7 @@ def run_pipeline_apply(
     console,
     *,
     dry_run: bool = False,
+    drain: bool = False,
     user_id: int = DEFAULT_USER_ID,
 ) -> None:
     if is_paused():
@@ -231,6 +233,7 @@ def run_pipeline_apply(
             candidate_names=candidate_names,
             saved_search_by_name=saved_search_by_name,
             dry_run=dry_run,
+            drain=drain,
             user_id=user_id,
         )
 
@@ -239,6 +242,7 @@ def _try_flat(
     *, conn: sqlite3.Connection, console, profile: Profile,
     flat: dict, platform: str, candidate_names: list[str],
     saved_search_by_name: dict[str, SavedSearch], dry_run: bool,
+    drain: bool = False,
     user_id: int = DEFAULT_USER_ID,
 ) -> None:
     flat_id = int(flat["id"])
@@ -254,6 +258,7 @@ def _try_flat(
 
         cap = daily_cap_remaining(conn, profile, platform, user_id=user_id)
         if cap <= 0:
+            # Cap won't reset until UTC midnight, so even drain mode skips.
             console.print(
                 f"[dim]auto-apply: cap reached on {platform}; skipping flat {flat_id}[/dim]"
             )
@@ -261,11 +266,26 @@ def _try_flat(
 
         wait = cooldown_remaining_sec(conn, profile, platform, user_id=user_id)
         if wait > 0:
-            console.print(
-                f"[dim]auto-apply: cooldown {wait:.0f}s on {platform}; "
-                f"skipping flat {flat_id}[/dim]"
-            )
-            return
+            if drain:
+                console.print(
+                    f"[dim]auto-apply: cooldown {wait:.0f}s on {platform}; "
+                    f"sleeping before flat {flat_id}…[/dim]"
+                )
+                # Re-check pause after the long sleep — drain runs can span
+                # 30+ minutes and the user must be able to halt mid-run.
+                time.sleep(wait + 1)
+                if is_paused():
+                    console.print(
+                        "[yellow]auto-apply: PAUSED (~/.flatpilot/PAUSE "
+                        "appeared during drain) — stopping[/yellow]"
+                    )
+                    return
+            else:
+                console.print(
+                    f"[dim]auto-apply: cooldown {wait:.0f}s on {platform}; "
+                    f"skipping flat {flat_id}[/dim]"
+                )
+                return
 
         if (
             failures_for_flat(conn, flat_id, user_id=user_id)

@@ -20,6 +20,7 @@ def run_pipeline_once(
     *,
     skip_apply: bool = False,
     dry_run_apply: bool = False,
+    drain_apply: bool = False,
     user_id: int = DEFAULT_USER_ID,
 ) -> int:
     """Run one scrape → match → apply → notify pass. Return number of stage failures."""
@@ -42,7 +43,12 @@ def run_pipeline_once(
     if not skip_apply:
         console.rule("apply")
         try:
-            run_pipeline_apply(profile, console, dry_run=dry_run_apply, user_id=user_id)
+            run_pipeline_apply(
+                profile, console,
+                dry_run=dry_run_apply,
+                drain=drain_apply,
+                user_id=user_id,
+            )
         except Exception as exc:
             console.print(f"[red]apply failed: {exc.__class__.__name__}: {exc}[/red]")
             failures += 1
@@ -91,10 +97,11 @@ def run_pipeline_apply(
     console,
     *,
     dry_run: bool = False,
+    drain: bool = False,
     user_id: int = DEFAULT_USER_ID,
 ) -> None:
     from flatpilot.auto_apply import run_pipeline_apply as _impl
-    _impl(profile, console, dry_run=dry_run, user_id=user_id)
+    _impl(profile, console, dry_run=dry_run, drain=drain, user_id=user_id)
 
 
 def run_pipeline_notify(

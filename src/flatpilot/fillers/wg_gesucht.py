@@ -191,7 +191,7 @@ class WGGesuchtFiller:
                         f"{self.platform}: no submit button matching "
                         f"{SELECTORS.submit_button!r} on {contact_url}"
                     )
-                self._click_submit(pg, submit_btn)
+                self._click_submit(pg, submit_btn, listing_url)
                 # Give the page a moment to navigate. WG-Gesucht's
                 # messenger redirects to /nachrichten/<thread> on
                 # success; on validation failure it stays on the form
@@ -199,6 +199,7 @@ class WGGesuchtFiller:
                 with contextlib.suppress(PlaywrightTimeoutError):
                     pg.wait_for_load_state("networkidle", timeout=SUBMIT_NAV_WAIT_MS)
                 if FORM_URL_SEGMENT in (pg.url or ""):
+                    self._capture_failure_screenshot(pg, listing_url)
                     raise SubmitVerificationError(
                         f"{self.platform}: submit did not navigate away from the "
                         f"form URL ({pg.url}) — message likely rejected by validation"
@@ -274,7 +275,7 @@ class WGGesuchtFiller:
                 f"{SELECTORS.form!r} never became visible"
             ) from exc
 
-    def _click_submit(self, pg: Any, submit_btn: Any) -> None:
+    def _click_submit(self, pg: Any, submit_btn: Any, listing_url: str) -> None:
         # FlatPilot-k17. The #sec_advice Bootstrap modal can intercept
         # the submit click — sometimes it is already rendered with the
         # `in` class at form load, sometimes it opens in response to the
@@ -290,6 +291,7 @@ class WGGesuchtFiller:
             return
         except PlaywrightTimeoutError as first_exc:
             if not self._dismiss_submit_advisory(pg):
+                self._capture_failure_screenshot(pg, listing_url)
                 raise SubmitVerificationError(
                     f"{self.platform}: submit click timed out at {pg.url} — "
                     f"likely intercepted by an overlay we could not dismiss"
@@ -297,6 +299,7 @@ class WGGesuchtFiller:
         try:
             submit_btn.click(timeout=SUBMIT_CLICK_TIMEOUT_MS)
         except PlaywrightTimeoutError as retry_exc:
+            self._capture_failure_screenshot(pg, listing_url)
             raise SubmitVerificationError(
                 f"{self.platform}: submit click timed out at {pg.url} "
                 f"even after dismissing advisory modal"
@@ -343,6 +346,29 @@ class WGGesuchtFiller:
         slug = listing_url.rstrip("/").split("/")[-1] or "listing"
         path = screenshot_dir / f"{self.platform}-{slug}.png"
         pg.screenshot(path=str(path), full_page=True)
+        return path
+
+    def _capture_failure_screenshot(self, pg: Any, listing_url: str) -> Path | None:
+        # Best-effort post-mortem aid for SubmitVerificationError. Reads
+        # FAILURE_SCREENSHOTS_DIR from the config module each call so test
+        # monkeypatches of APP_DIR are honoured. Any exception here is
+        # logged and swallowed so the original SubmitVerificationError —
+        # the thing the caller actually needs — is never masked. FlatPilot-8kt.
+        try:
+            from flatpilot.config import FAILURE_SCREENSHOTS_DIR
+
+            target_dir = FAILURE_SCREENSHOTS_DIR / self.platform
+            target_dir.mkdir(parents=True, exist_ok=True)
+            slug = listing_url.rstrip("/").split("/")[-1] or "listing"
+            ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+            path = target_dir / f"{slug}-{ts}.png"
+            pg.screenshot(path=str(path), full_page=True)
+        except Exception as exc:
+            logger.warning(
+                "%s: failure-screenshot capture failed: %s", self.platform, exc
+            )
+            return None
+        logger.info("%s: failure screenshot saved to %s", self.platform, path)
         return path
 
 

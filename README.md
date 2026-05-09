@@ -142,6 +142,14 @@ Walks the full pipeline and logs which flats would be auto-applied to, without c
 flatpilot run --skip-apply       # scrape + match + notify only
 ```
 
+### Drain the queue
+
+```bash
+flatpilot run --drain
+```
+
+Default behaviour is one application per platform per pass — once a flat is submitted, the per-platform cooldown gates the rest of that pass. With `--drain`, the pipeline sleeps through cooldowns instead of skipping, so a single invocation keeps submitting until the queue is empty or the per-platform daily cap is hit. A `flatpilot pause` issued mid-drain is honoured at the next sleep boundary.
+
 ## Configuration
 
 - `FLATPILOT_APPLY_TIMEOUT_SEC` (default `180`) — caps the dashboard's `flatpilot apply <id>` subprocess. Bump for slow Playwright runs (large attachments, slow networks).

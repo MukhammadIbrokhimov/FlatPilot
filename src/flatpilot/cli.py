@@ -121,6 +121,14 @@ def run(
         "--dry-run-apply",
         help="Log what auto-apply would do without calling fillers.",
     ),
+    drain: bool = typer.Option(
+        False,
+        "--drain",
+        help="Keep submitting until the queue is empty or the per-platform "
+        "daily cap is hit; sleep through cooldowns instead of skipping. "
+        "Without this flag, only one flat per platform is attempted per "
+        "pass (cooldown-skipped flats are silently passed over).",
+    ),
 ) -> None:
     """One scrape + match + apply + notify pass (add --watch to loop)."""
     import signal
@@ -147,6 +155,7 @@ def run(
             profile, console,
             skip_apply=skip_apply,
             dry_run_apply=dry_run_apply,
+            drain_apply=drain,
         )
         if failures:
             raise typer.Exit(1)
@@ -176,6 +185,7 @@ def run(
                     profile, console,
                     skip_apply=skip_apply,
                     dry_run_apply=dry_run_apply,
+                    drain_apply=drain,
                 )
             except Exception as exc:
                 console.print(f"[red]pass {pass_num} aborted: {exc}[/red]")

@@ -572,6 +572,65 @@ def resume() -> None:
     rprint("[green]auto-apply resumed[/green]")
 
 
+@app.command(name="reclassify-submits")
+def reclassify_submits(
+    apply_changes: bool = typer.Option(
+        False,
+        "--apply",
+        help="Actually update the rows. Default is dry-run (preview only).",
+    ),
+) -> None:
+    """Re-classify silent-success false-fails as `status='submitted'`.
+
+    See FlatPilot-8kt: WG-Gesucht's in-place success rendering caused
+    real submissions to be recorded with `status='failed'`. This command
+    finds those rows (failed wg-gesucht submits with a follow-up
+    `auto_skipped: listing_expired` row on the same flat — proof that
+    the listing's contact CTA was hidden, which only happens after
+    successful contact) and updates them to `status='submitted'`.
+    """
+    from rich.console import Console
+    from rich.table import Table
+
+    from flatpilot.database import get_conn, init_db
+    from flatpilot.reclassify import apply_reclassification, find_candidates
+
+    init_db()
+    conn = get_conn()
+    candidates = find_candidates(conn)
+
+    console = Console()
+    if not candidates:
+        console.print("[green]No silent-success false-fail rows found — nothing to do.[/green]")
+        return
+
+    table = Table(title=f"reclassify-submits — {len(candidates)} candidate(s)")
+    table.add_column("app id", justify="right")
+    table.add_column("flat id", justify="right")
+    table.add_column("platform")
+    table.add_column("applied_at")
+    table.add_column("title")
+    for c in candidates:
+        table.add_row(
+            str(c.application_id),
+            str(c.flat_id),
+            c.platform,
+            c.applied_at,
+            c.title[:60],
+        )
+    console.print(table)
+
+    if not apply_changes:
+        console.print(
+            "[yellow]Dry run — no rows changed.[/yellow] "
+            "Re-run with [bold]--apply[/bold] to update."
+        )
+        return
+
+    n = apply_reclassification(conn, candidates)
+    console.print(f"[green]Reclassified {n} row(s) to status='submitted'.[/green]")
+
+
 @app.command()
 def dashboard(
     port: int = typer.Option(

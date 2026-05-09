@@ -35,6 +35,10 @@ ATTACHMENTS_DIR: Path = APP_DIR / "attachments"
 # The L2 composer (flatpilot.compose) reads from here; L4 apply wires
 # it into the outgoing contact form.
 TEMPLATES_DIR: Path = APP_DIR / "templates"
+# Per-platform debug screenshots written when a filler raises
+# SubmitVerificationError. FlatPilot-8kt — best-effort post-mortem aid
+# so silent submit rejections become diagnosable after the fact.
+FAILURE_SCREENSHOTS_DIR: Path = APP_DIR / "screenshots"
 
 
 def ensure_dirs() -> None:
@@ -43,6 +47,7 @@ def ensure_dirs() -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
     TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+    FAILURE_SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def load_env() -> None:

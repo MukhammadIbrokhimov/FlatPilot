@@ -15,6 +15,7 @@ will see the form URL and raise — the success test catches that.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -105,6 +106,7 @@ class _FakePage:
         }
         self.submit_locator = self._locators[SELECTORS.submit_button]
         self.message_locator = self._locators[SELECTORS.message_input]
+        self.screenshot_calls: list[dict] = []
 
     def goto(self, url: str, **kwargs):
         self._goto_calls.append(url)
@@ -118,7 +120,8 @@ class _FakePage:
         return _Locator(count=0)
 
     def screenshot(self, **kwargs) -> None:
-        pass
+        # Record kwargs so failure-path tests can assert path/full_page.
+        self.screenshot_calls.append(dict(kwargs))
 
     def wait_for_load_state(self, *args, **kwargs) -> None:
         return None
@@ -391,3 +394,51 @@ def test_fill_submit_timeout_after_dismissal_raises_submit_verification(fake_ses
         )
 
     assert fake_session.submit_locator.click_calls == 2
+
+
+# -------- failure-screenshot path (FlatPilot-8kt) --------
+
+def test_submit_stayed_on_form_writes_failure_screenshot(tmp_db, fake_session):
+    # tmp_db redirects config.FAILURE_SCREENSHOTS_DIR to tmp_path. With no
+    # click_handler wired the URL stays on the form URL after submit; the
+    # filler must capture a screenshot to <APP_DIR>/screenshots/wg-gesucht/
+    # before raising SubmitVerificationError.
+    from flatpilot import config
+
+    filler = WGGesuchtFiller()
+    with pytest.raises(SubmitVerificationError, match="submit did not navigate"):
+        filler.fill(
+            listing_url="https://www.wg-gesucht.de/listing/123.html",
+            message="Hallo.",
+            attachments=[],
+            submit=True,
+        )
+
+    assert len(fake_session.screenshot_calls) == 1
+    captured_path = Path(fake_session.screenshot_calls[0]["path"])
+    expected_dir = config.FAILURE_SCREENSHOTS_DIR / "wg-gesucht"
+    assert captured_path.parent == expected_dir
+    assert captured_path.name.startswith("123.html-")
+    assert captured_path.suffix == ".png"
+    assert fake_session.screenshot_calls[0].get("full_page") is True
+    # Directory is created as a side effect.
+    assert expected_dir.is_dir()
+
+
+def test_failure_screenshot_exception_does_not_mask_submit_error(tmp_db, fake_session):
+    # Instrumentation must be best-effort. If pg.screenshot raises, the
+    # filler still raises SubmitVerificationError — the screenshot is
+    # secondary; the original failure is what callers act on.
+    def boom(**_kwargs):
+        raise RuntimeError("disk full")
+
+    fake_session.screenshot = boom
+
+    filler = WGGesuchtFiller()
+    with pytest.raises(SubmitVerificationError, match="submit did not navigate"):
+        filler.fill(
+            listing_url="https://www.wg-gesucht.de/listing/123.html",
+            message="Hallo.",
+            attachments=[],
+            submit=True,
+        )

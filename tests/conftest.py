@@ -32,6 +32,7 @@ def tmp_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(config, "LOG_DIR", app_dir / "logs")
     monkeypatch.setattr(config, "ATTACHMENTS_DIR", app_dir / "attachments")
     monkeypatch.setattr(config, "TEMPLATES_DIR", app_dir / "templates")
+    monkeypatch.setattr(config, "FAILURE_SCREENSHOTS_DIR", app_dir / "screenshots")
     monkeypatch.setattr(database, "DB_PATH", db_path)
 
     # compose.py and attachments.py bind their path references at import time

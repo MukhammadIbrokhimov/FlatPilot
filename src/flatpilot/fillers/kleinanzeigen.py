@@ -106,7 +106,12 @@ LOGIN_URL_FRAGMENTS: tuple[str, ...] = (
     "/registrieren",
 )
 
-SUBMIT_NAV_WAIT_MS = 7_000
+# Bumped from 7s → 15s after observing real submit timeouts on kleinanzeigen
+# (FlatPilot-8kt followup): the platform's XHR roundtrip can be slow under
+# load. 15s is long enough that genuine network slowness clears but short
+# enough that a stuck submit does not block the auto-apply queue for an
+# entire pacing cycle.
+SUBMIT_NAV_WAIT_MS = 15_000
 FORM_WAIT_MS = 5_000
 FIELD_WAIT_MS = 3_000
 
@@ -196,7 +201,7 @@ class KleinanzeigenFiller:
                         f"{SELECTORS.submit_button!r} on {contact_url}"
                     )
                 submit_btn.click()
-                submitted = self._verify_submitted(pg, contact_url)
+                submitted = self._verify_submitted(pg, contact_url, listing_url)
 
             screenshot_path = self._maybe_screenshot(pg, screenshot_dir, listing_url)
 
@@ -260,7 +265,7 @@ class KleinanzeigenFiller:
             ) from exc
         target.fill(value)
 
-    def _verify_submitted(self, pg: Any, contact_url: str) -> bool:
+    def _verify_submitted(self, pg: Any, contact_url: str, listing_url: str) -> bool:
         # Kleinanzeigen submits via XHR to /s-anbieter-kontaktieren.json
         # so the form URL never changes. Wait for either the success or
         # error indicator to become visible; treat a timeout as a verify
@@ -273,9 +278,11 @@ class KleinanzeigenFiller:
         except PlaywrightTimeoutError:
             pass
         if error.is_visible():
+            self._capture_failure_screenshot(pg, listing_url)
             raise SubmitVerificationError(
                 f"{self.platform}: submit failed — error banner visible at {contact_url}"
             )
+        self._capture_failure_screenshot(pg, listing_url)
         raise SubmitVerificationError(
             f"{self.platform}: neither success nor error indicator appeared "
             f"within {SUBMIT_NAV_WAIT_MS}ms after submit at {contact_url}"
@@ -296,6 +303,30 @@ class KleinanzeigenFiller:
         slug = listing_url.rstrip("/").split("/")[-1] or "listing"
         path = screenshot_dir / f"{self.platform}-{slug}.png"
         pg.screenshot(path=str(path), full_page=True)
+        return path
+
+    def _capture_failure_screenshot(self, pg: Any, listing_url: str) -> Path | None:
+        # Best-effort post-mortem aid for SubmitVerificationError. Mirrors
+        # the wg-gesucht filler's helper (FlatPilot-8kt). Reads
+        # FAILURE_SCREENSHOTS_DIR from the config module each call so test
+        # monkeypatches of APP_DIR are honoured. Any exception here is
+        # logged and swallowed so the original SubmitVerificationError —
+        # the thing the caller actually needs — is never masked.
+        try:
+            from flatpilot.config import FAILURE_SCREENSHOTS_DIR
+
+            target_dir = FAILURE_SCREENSHOTS_DIR / self.platform
+            target_dir.mkdir(parents=True, exist_ok=True)
+            slug = listing_url.rstrip("/").split("/")[-1] or "listing"
+            ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+            path = target_dir / f"{slug}-{ts}.png"
+            pg.screenshot(path=str(path), full_page=True)
+        except Exception as exc:
+            logger.warning(
+                "%s: failure-screenshot capture failed: %s", self.platform, exc
+            )
+            return None
+        logger.info("%s: failure screenshot saved to %s", self.platform, path)
         return path
 
 

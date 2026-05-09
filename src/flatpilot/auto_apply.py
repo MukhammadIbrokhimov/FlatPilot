@@ -224,18 +224,38 @@ def run_pipeline_apply(
         platform = str(flat["platform"])
         candidate_names = json.loads(flat["matched_saved_searches_json"])
 
-        _try_flat(
-            conn=conn,
-            console=console,
-            profile=profile,
-            flat=flat,
-            platform=platform,
-            candidate_names=candidate_names,
-            saved_search_by_name=saved_search_by_name,
-            dry_run=dry_run,
-            drain=drain,
-            user_id=user_id,
-        )
+        # Per-flat error isolation: an unhandled exception on one flat
+        # (Playwright crash, anti-bot challenge, attribute error in a
+        # filler edge case, …) must NOT abort the whole queue. The drain
+        # use case especially depends on this: a single bad listing
+        # 5 minutes into a 60-minute drain would otherwise abandon the
+        # remaining ~25 flats. KeyboardInterrupt and SystemExit still
+        # propagate so Ctrl-C / SIGTERM keep their semantics.
+        try:
+            _try_flat(
+                conn=conn,
+                console=console,
+                profile=profile,
+                flat=flat,
+                platform=platform,
+                candidate_names=candidate_names,
+                saved_search_by_name=saved_search_by_name,
+                dry_run=dry_run,
+                drain=drain,
+                user_id=user_id,
+            )
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as exc:
+            logger.exception(
+                "auto-apply: unhandled error on flat %d (%s); skipping",
+                int(flat["id"]),
+                platform,
+            )
+            console.print(
+                f"[red]auto-apply: unhandled error on flat {flat['id']} "
+                f"({type(exc).__name__}: {exc}) — skipping[/red]"
+            )
 
 
 def _try_flat(

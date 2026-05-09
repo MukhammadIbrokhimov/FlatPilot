@@ -451,3 +451,77 @@ def test_active_cooldown_skips_pending_match(tmp_db):
         run_pipeline_apply(profile, Console())
 
     mocked.assert_not_called()
+
+
+def test_unhandled_exception_on_one_flat_does_not_stop_the_queue(tmp_db):
+    # An unexpected exception inside _try_flat (e.g. Playwright crash,
+    # anti-bot challenge, AttributeError in a filler edge case) must not
+    # abandon every remaining flat in the queue. The pipeline catches it
+    # per-flat, logs, and moves on. Drain mode depends on this.
+    from flatpilot.apply import ApplyOutcome
+    from flatpilot.auto_apply import run_pipeline_apply
+    from flatpilot.profile import profile_hash
+
+    profile = _profile_with_one_auto_search()
+    save_profile(profile)
+
+    # Three flats in queue; the first will blow up, the next two must
+    # still be attempted.
+    flat_ids: list[int] = []
+    for i in range(3):
+        cur = tmp_db.execute(
+            "INSERT INTO flats (external_id, platform, listing_url, title, "
+            "scraped_at, first_seen_at, requires_wbs) "
+            "VALUES (?, 'wg-gesucht', 'https://x', 'T', ?, ?, 0)",
+            (f"crash-q-{i}", datetime.now(UTC).isoformat(), datetime.now(UTC).isoformat()),
+        )
+        flat_id = int(cur.lastrowid or 0)
+        flat_ids.append(flat_id)
+        _seed_match(
+            tmp_db, flat_id=flat_id, profile_hash=profile_hash(profile),
+            matched_saved_searches=["ss1"],
+        )
+
+    apply_calls: list[int] = []
+
+    def apply_side_effect(flat_id, **_kwargs):
+        if flat_id == flat_ids[0]:
+            raise RuntimeError("simulated Playwright crash on first flat")
+        apply_calls.append(flat_id)
+        return ApplyOutcome(
+            status="submitted", application_id=len(apply_calls), fill_report=None,
+        )
+
+    with (
+        patch("flatpilot.auto_apply.apply_to_flat", side_effect=apply_side_effect),
+        patch("flatpilot.auto_apply.completeness_ok", return_value=(True, None)),
+        # Bypass cooldown so flats 2 and 3 are reachable in one pass.
+        patch("flatpilot.auto_apply.cooldown_remaining_sec", return_value=0.0),
+    ):
+        run_pipeline_apply(profile, Console())
+
+    assert apply_calls == flat_ids[1:]
+
+
+def test_keyboard_interrupt_propagates_through_error_isolation(tmp_db):
+    # The error-isolation must NOT swallow KeyboardInterrupt / SystemExit —
+    # otherwise Ctrl-C during a drain would never bubble out.
+    import pytest
+
+    from flatpilot.auto_apply import run_pipeline_apply
+    from flatpilot.profile import profile_hash
+
+    profile = _profile_with_one_auto_search()
+    save_profile(profile)
+    flat_id = _seed_flat(tmp_db)
+    _seed_match(
+        tmp_db, flat_id=flat_id, profile_hash=profile_hash(profile),
+        matched_saved_searches=["ss1"],
+    )
+
+    with (
+        patch("flatpilot.auto_apply.apply_to_flat", side_effect=KeyboardInterrupt),
+        patch("flatpilot.auto_apply.completeness_ok", return_value=(True, None)),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        run_pipeline_apply(profile, Console())

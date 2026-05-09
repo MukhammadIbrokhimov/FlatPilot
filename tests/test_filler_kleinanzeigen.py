@@ -107,6 +107,7 @@ class _FakePage:
         self.submit_locator = self._locators[SELECTORS.submit_button]
         self.success_locator = self._locators[SELECTORS.success_marker]
         self.error_locator = self._locators[SELECTORS.error_marker]
+        self.screenshot_calls: list[dict] = []
 
     def goto(self, url: str, **kwargs):
         self._goto_calls.append(url)
@@ -120,7 +121,7 @@ class _FakePage:
         return _Locator(count=0, visible=False)
 
     def screenshot(self, **kwargs) -> None:
-        pass
+        self.screenshot_calls.append(dict(kwargs))
 
     def wait_for_load_state(self, *args, **kwargs) -> None:
         return None
@@ -334,3 +335,69 @@ def test_kleinanzeigen_filler_is_registered():
     # kleinanzeigen and `flatpilot apply` on a Kleinanzeigen flat
     # raises KeyError — the original bug closed by this PR.
     assert get_filler("kleinanzeigen") is KleinanzeigenFiller
+
+
+# -------- failure-screenshot path (FlatPilot-8kt followup) --------
+
+def test_neither_marker_failure_writes_failure_screenshot(tmp_db, fake_session):
+    # Default fake_session: success/error markers present but not visible →
+    # _verify_submitted's wait_for(visible) times out and the helper raises.
+    # The new instrumentation must capture a screenshot to
+    # FAILURE_SCREENSHOTS_DIR/kleinanzeigen/<slug>-<isots>.png before raising.
+    from pathlib import Path
+
+    from flatpilot import config
+
+    filler = KleinanzeigenFiller()
+    with pytest.raises(SubmitVerificationError, match="neither success nor error"):
+        filler.fill(
+            listing_url=_LISTING_URL,
+            message="Hallo.",
+            attachments=[],
+            submit=True,
+        )
+
+    assert len(fake_session.screenshot_calls) == 1
+    captured_path = Path(fake_session.screenshot_calls[0]["path"])
+    expected_dir = config.FAILURE_SCREENSHOTS_DIR / "kleinanzeigen"
+    assert captured_path.parent == expected_dir
+    assert captured_path.name.startswith("9999-203-0001-")
+    assert captured_path.suffix == ".png"
+    assert fake_session.screenshot_calls[0].get("full_page") is True
+
+
+def test_error_banner_failure_writes_failure_screenshot(tmp_db, fake_session):
+    # Error banner becomes visible synchronously: wait_for(visible) on the
+    # success marker still times out, then the error_marker.is_visible()
+    # check fires the SubmitVerificationError. Both raise sites must capture
+    # a screenshot for post-mortem.
+    fake_session.error_locator._visible = True
+
+    filler = KleinanzeigenFiller()
+    with pytest.raises(SubmitVerificationError, match="error banner visible"):
+        filler.fill(
+            listing_url=_LISTING_URL,
+            message="Hallo.",
+            attachments=[],
+            submit=True,
+        )
+
+    assert len(fake_session.screenshot_calls) == 1
+
+
+def test_failure_screenshot_exception_does_not_mask_submit_error(tmp_db, fake_session):
+    # Instrumentation must be best-effort. If pg.screenshot raises, the
+    # filler still raises SubmitVerificationError.
+    def boom(**_kwargs):
+        raise RuntimeError("disk full")
+
+    fake_session.screenshot = boom
+
+    filler = KleinanzeigenFiller()
+    with pytest.raises(SubmitVerificationError, match="neither success nor error"):
+        filler.fill(
+            listing_url=_LISTING_URL,
+            message="Hallo.",
+            attachments=[],
+            submit=True,
+        )

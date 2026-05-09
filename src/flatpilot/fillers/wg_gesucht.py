@@ -120,6 +120,22 @@ SUBMIT_ADVISORY_SELECTORS: tuple[str, ...] = (
     "#sec_advice button.close",
 )
 
+# Positive signals that the post-submit success card has rendered. Either
+# match → submission accepted by WG-Gesucht. Used by ``_verify_submitted``
+# alongside the legacy URL-change check. FlatPilot-8kt: form-absence is
+# unreliable because WG-Gesucht hides the form (display:none) rather than
+# removing it from the DOM, so a positive marker on the success card is
+# the durable detection point.
+SUBMIT_SUCCESS_INDICATORS: tuple[str, ...] = (
+    # Navigation link to the user's inbox; only rendered on the in-place
+    # success page, not on the form itself. Structural and language-stable.
+    "a:has-text('Nachrichten ansehen')",
+    # German "successfully contacted" copy inside the success alert.
+    # Scoped to .alert-success so unrelated success toasts elsewhere on
+    # the page (e.g. "Notiz gespeichert") do not match.
+    ".alert-success:has-text('erfolgreich kontaktiert')",
+)
+
 
 @register
 class WGGesuchtFiller:
@@ -192,17 +208,14 @@ class WGGesuchtFiller:
                         f"{SELECTORS.submit_button!r} on {contact_url}"
                     )
                 self._click_submit(pg, submit_btn, listing_url)
-                # Give the page a moment to navigate. WG-Gesucht's
-                # messenger redirects to /nachrichten/<thread> on
-                # success; on validation failure it stays on the form
-                # URL and renders an inline error banner.
                 with contextlib.suppress(PlaywrightTimeoutError):
                     pg.wait_for_load_state("networkidle", timeout=SUBMIT_NAV_WAIT_MS)
-                if FORM_URL_SEGMENT in (pg.url or ""):
+                if not self._verify_submitted(pg):
                     self._capture_failure_screenshot(pg, listing_url)
                     raise SubmitVerificationError(
-                        f"{self.platform}: submit did not navigate away from the "
-                        f"form URL ({pg.url}) — message likely rejected by validation"
+                        f"{self.platform}: submit verification failed at "
+                        f"{pg.url} — messenger form still present and URL "
+                        f"unchanged, message likely rejected"
                     )
                 submitted = True
 
@@ -347,6 +360,25 @@ class WGGesuchtFiller:
         path = screenshot_dir / f"{self.platform}-{slug}.png"
         pg.screenshot(path=str(path), full_page=True)
         return path
+
+    def _verify_submitted(self, pg: Any) -> bool:
+        # Two equivalent success signals:
+        #   1. URL navigated away from /nachricht-senden/<slug> — the legacy
+        #      redirect path (still observed on some flows).
+        #   2. A SUBMIT_SUCCESS_INDICATORS selector matches — the in-place
+        #      success card rendered on the form URL (current path on flats
+        #      29 / 41 / 616, 2026-05-09).
+        # A real validation failure leaves the URL on /nachricht-senden/ AND
+        # renders no success card. FlatPilot-8kt.
+        if FORM_URL_SEGMENT not in (pg.url or ""):
+            return True
+        for selector in SUBMIT_SUCCESS_INDICATORS:
+            try:
+                if pg.locator(selector).count() > 0:
+                    return True
+            except Exception:
+                continue
+        return False
 
     def _capture_failure_screenshot(self, pg: Any, listing_url: str) -> Path | None:
         # Best-effort post-mortem aid for SubmitVerificationError. Reads

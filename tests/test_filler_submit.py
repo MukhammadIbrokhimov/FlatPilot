@@ -25,6 +25,7 @@ from flatpilot.fillers.base import ListingExpiredError, SubmitVerificationError
 from flatpilot.fillers.wg_gesucht import (
     SELECTORS,
     SUBMIT_ADVISORY_SELECTORS,
+    SUBMIT_SUCCESS_INDICATORS,
     WGGesuchtFiller,
 )
 
@@ -197,15 +198,44 @@ def test_fill_with_submit_true_clicks_submit_and_marks_submitted(fake_session):
 
 
 def test_fill_submit_raises_when_url_stayed_on_form(fake_session):
-    # No click_handler wired — page URL stays on the form URL after click.
+    # URL stays on form AND form#messenger_form is still rendered → real
+    # validation failure. Both signals fail the success check.
     filler = WGGesuchtFiller()
-    with pytest.raises(SubmitVerificationError, match="submit did not navigate"):
+    with pytest.raises(SubmitVerificationError, match="submit verification failed"):
         filler.fill(
             listing_url="https://www.wg-gesucht.de/listing/123.html",
             message="Hallo, ich bin interessiert.",
             attachments=[],
             submit=True,
         )
+
+
+def test_fill_submit_succeeds_via_success_marker(fake_session):
+    # FlatPilot-8kt: WG-Gesucht's current success path keeps the URL on
+    # /nachricht-senden/<slug> AND keeps the messenger form in the DOM
+    # (hidden via CSS) — only the success card on top is the visible
+    # post-submit signal. The fix detects this by matching a positive
+    # marker, here the "Nachrichten ansehen" inbox link.
+    success_marker = SUBMIT_SUCCESS_INDICATORS[0]  # 'a:has-text("Nachrichten ansehen")'
+
+    def render_success_card():
+        fake_session._locators[success_marker] = _Locator(count=1)
+
+    fake_session.submit_locator.click_handler = render_success_card
+
+    filler = WGGesuchtFiller()
+    report = filler.fill(
+        listing_url="https://www.wg-gesucht.de/listing/123.html",
+        message="Hallo, ich bin interessiert.",
+        attachments=[],
+        submit=True,
+    )
+
+    assert report.submitted is True
+    # URL deliberately unchanged — success was in-place.
+    assert fake_session.url == _FORM_URL
+    # Form locator is still default (count=1) — we did NOT rely on form-absence.
+    assert fake_session._locators[SELECTORS.form].count() == 1
 
 
 def test_fill_message_must_be_non_empty(fake_session):
@@ -406,7 +436,7 @@ def test_submit_stayed_on_form_writes_failure_screenshot(tmp_db, fake_session):
     from flatpilot import config
 
     filler = WGGesuchtFiller()
-    with pytest.raises(SubmitVerificationError, match="submit did not navigate"):
+    with pytest.raises(SubmitVerificationError, match="submit verification failed"):
         filler.fill(
             listing_url="https://www.wg-gesucht.de/listing/123.html",
             message="Hallo.",
@@ -435,7 +465,7 @@ def test_failure_screenshot_exception_does_not_mask_submit_error(tmp_db, fake_se
     fake_session.screenshot = boom
 
     filler = WGGesuchtFiller()
-    with pytest.raises(SubmitVerificationError, match="submit did not navigate"):
+    with pytest.raises(SubmitVerificationError, match="submit verification failed"):
         filler.fill(
             listing_url="https://www.wg-gesucht.de/listing/123.html",
             message="Hallo.",

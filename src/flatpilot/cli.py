@@ -124,19 +124,28 @@ def run(
     drain: bool = typer.Option(
         False,
         "--drain",
-        help="Keep submitting until the queue is empty or the per-platform "
-        "daily cap is hit; sleep through cooldowns instead of skipping. "
-        "Without this flag, only one flat per platform is attempted per "
-        "pass (cooldown-skipped flats are silently passed over).",
+        help="Keep submitting until every reachable platform's daily cap is "
+        "met (or 2 consecutive passes add zero submits). Loops scrape → "
+        "match → apply, sleeping cooldowns inside each pass and --interval "
+        "between passes. On exit (cap reached, Ctrl-C, SIGTERM) prints a "
+        "grouped, deduped summary of per-flat filler failures so you can "
+        "fix them. Combine with --watch to ignore the cap-reached exit and "
+        "loop forever.",
     ),
 ) -> None:
     """One scrape + match + apply + notify pass (add --watch to loop)."""
     import signal
     import time
+    from datetime import UTC, datetime
 
     from rich.console import Console
 
-    from flatpilot.database import init_db
+    from flatpilot.auto_apply import (
+        drain_complete,
+        print_failure_summary,
+        submitted_since,
+    )
+    from flatpilot.database import get_conn, init_db
     from flatpilot.profile import load_profile
 
     console = Console()
@@ -150,14 +159,82 @@ def run(
 
     init_db()
 
-    if not watch:
+    if not watch and not drain:
         failures = run_pipeline_once(
             profile, console,
             skip_apply=skip_apply,
             dry_run_apply=dry_run_apply,
-            drain_apply=drain,
+            drain_apply=False,
         )
         if failures:
+            raise typer.Exit(1)
+        return
+
+    if not watch and drain:
+        # Drain loop: scrape → match → apply, repeat until every reachable
+        # platform hits cap OR two passes in a row add zero submits. SIGINT
+        # / SIGTERM raise into the loop so cooldown sleeps inside _try_flat
+        # abort promptly; the failure summary always prints from `finally`.
+        def _raise_signal(signum, _frame) -> None:
+            raise KeyboardInterrupt(f"received {signal.Signals(signum).name}")
+
+        prev_int = signal.signal(signal.SIGINT, _raise_signal)
+        prev_term = signal.signal(signal.SIGTERM, _raise_signal)
+
+        run_started_at = datetime.now(UTC).isoformat()
+        pass_num = 0
+        empty_streak = 0
+        total_failures = 0
+        interrupted = False
+        try:
+            while True:
+                pass_num += 1
+                console.rule(f"[bold]pass {pass_num}[/bold]")
+                pass_start = datetime.now(UTC).isoformat()
+                try:
+                    total_failures += run_pipeline_once(
+                        profile, console,
+                        skip_apply=skip_apply,
+                        dry_run_apply=dry_run_apply,
+                        drain_apply=True,
+                    )
+                except Exception as exc:
+                    console.print(f"[red]pass {pass_num} aborted: {exc}[/red]")
+                    total_failures += 1
+
+                submits = submitted_since(get_conn(), pass_start)
+                empty_streak = 0 if submits > 0 else empty_streak + 1
+
+                if drain_complete(
+                    get_conn(), profile, empty_pass_streak=empty_streak
+                ):
+                    console.print(
+                        f"[bold]drain complete[/bold] after pass {pass_num} "
+                        f"(empty_streak={empty_streak})"
+                    )
+                    break
+
+                console.print(
+                    f"[dim]sleeping {interval}s before next pass "
+                    f"(Ctrl-C / SIGTERM to stop)…[/dim]"
+                )
+                time.sleep(interval)
+        except KeyboardInterrupt as exc:
+            interrupted = True
+            console.print(f"\n[yellow]{exc} — stopping drain loop[/yellow]")
+        finally:
+            signal.signal(signal.SIGINT, prev_int)
+            signal.signal(signal.SIGTERM, prev_term)
+            total_submits = submitted_since(get_conn(), run_started_at)
+            print_failure_summary(
+                console, get_conn(),
+                since_iso=run_started_at,
+                submitted_count=total_submits,
+            )
+
+        if interrupted:
+            raise typer.Exit(130)
+        if total_failures:
             raise typer.Exit(1)
         return
 
@@ -174,6 +251,7 @@ def run(
     prev_int = signal.signal(signal.SIGINT, _handler)
     prev_term = signal.signal(signal.SIGTERM, _handler)
 
+    run_started_at = datetime.now(UTC).isoformat()
     pass_num = 0
     total_failures = 0
     try:
@@ -203,6 +281,12 @@ def run(
     finally:
         signal.signal(signal.SIGINT, prev_int)
         signal.signal(signal.SIGTERM, prev_term)
+        total_submits = submitted_since(get_conn(), run_started_at)
+        print_failure_summary(
+            console, get_conn(),
+            since_iso=run_started_at,
+            submitted_count=total_submits,
+        )
 
     console.print(
         f"[bold]stopped[/bold] · {pass_num} pass(es) · "

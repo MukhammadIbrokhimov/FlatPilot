@@ -13,7 +13,7 @@ import flatpilot.fillers.wg_gesucht  # noqa: F401
 from flatpilot.apply import _record_application, apply_to_flat
 from flatpilot.attachments import AttachmentError, resolve_for_platform
 from flatpilot.compose import TemplateError, compose_anschreiben
-from flatpilot.config import APP_DIR
+from flatpilot.config import APP_DIR, FAILURE_SCREENSHOTS_DIR
 from flatpilot.database import get_conn, init_db
 from flatpilot.fillers import get_filler
 from flatpilot.fillers.base import FillError
@@ -149,6 +149,149 @@ def flats_over_max_failures(
         (user_id, cap),
     ).fetchone()
     return int(row["n"] if row is not None else 0)
+
+
+def _has_filler(platform: str) -> bool:
+    try:
+        get_filler(platform)
+    except LookupError:
+        return False
+    return True
+
+
+def reachable_platforms(profile: Profile) -> list[str]:
+    """Platforms that can plausibly advance the daily cap during a drain loop.
+
+    Excludes cap=0 platforms (auto-apply disabled by config) and platforms
+    with no registered filler (scrape-only platforms like inberlinwohnen).
+    The drain loop must not block on these — their cap never decrements.
+    """
+    return [
+        p for p, cap in profile.auto_apply.daily_cap_per_platform.items()
+        if cap > 0 and _has_filler(p)
+    ]
+
+
+def drain_complete(
+    conn: sqlite3.Connection,
+    profile: Profile,
+    *,
+    empty_pass_streak: int,
+    user_id: int = DEFAULT_USER_ID,
+) -> bool:
+    """Decide whether the looping drain should exit after this pass."""
+    reachable = reachable_platforms(profile)
+    if not reachable:
+        return True
+    if all(daily_cap_remaining(conn, profile, p, user_id=user_id) <= 0
+           for p in reachable):
+        return True
+    return empty_pass_streak >= 2
+
+
+def submitted_since(
+    conn: sqlite3.Connection,
+    since_iso: str,
+    user_id: int = DEFAULT_USER_ID,
+) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) FROM applications "
+        "WHERE method = 'auto' AND status = 'submitted' "
+        "AND user_id = ? AND applied_at >= ?",
+        (user_id, since_iso),
+    ).fetchone()
+    return int(row[0])
+
+
+def _error_class(notes: str | None) -> str:
+    if not notes:
+        return "unknown"
+    # notes look like "kleinanzeigen: neither success nor error indicator..."
+    # or "wg-gesucht: selector_missing ..." — the leading platform token is
+    # redundant here (we group by platform separately), so prefer the first
+    # word AFTER the colon, falling back to the leading token.
+    if ":" in notes:
+        rest = notes.split(":", 1)[1].strip()
+        if rest:
+            return rest.split()[0] if rest.split() else rest[:40]
+    return notes.split()[0] if notes.split() else "unknown"
+
+
+def collect_failures_since(
+    conn: sqlite3.Connection,
+    since_iso: str,
+    user_id: int = DEFAULT_USER_ID,
+) -> list[dict]:
+    """Return real filler failures since ``since_iso``, deduped per flat.
+
+    Excludes ``auto_skipped:`` rows (no filler, expired listing) — those
+    are expected, not bugs the user needs to fix. Multiple retries of the
+    same flat collapse to one record so a flat at max_failures shows once.
+    """
+    rows = conn.execute(
+        """
+        SELECT platform, flat_id, listing_url, notes, applied_at
+        FROM applications
+        WHERE method = 'auto' AND status = 'failed'
+          AND user_id = ? AND applied_at >= ?
+          AND (notes IS NULL OR notes NOT LIKE 'auto_skipped:%')
+        ORDER BY platform, applied_at DESC
+        """,
+        (user_id, since_iso),
+    ).fetchall()
+    seen: set[tuple[int, str]] = set()
+    out: list[dict] = []
+    for row in rows:
+        key = (int(row["flat_id"]), _error_class(row["notes"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "platform": str(row["platform"]),
+            "flat_id": int(row["flat_id"]),
+            "url": str(row["listing_url"] or ""),
+            "error_class": key[1],
+            "notes": str(row["notes"] or ""),
+        })
+    return out
+
+
+def print_failure_summary(
+    console,
+    conn: sqlite3.Connection,
+    *,
+    since_iso: str,
+    submitted_count: int,
+    user_id: int = DEFAULT_USER_ID,
+) -> None:
+    from rich.table import Table
+
+    failures = collect_failures_since(conn, since_iso, user_id=user_id)
+    header = f"auto-apply: {submitted_count} submitted, {len(failures)} distinct failure(s)"
+    console.rule(f"[bold]{header}[/bold]")
+    if not failures:
+        console.print("[green]no filler failures this run — nothing to fix.[/green]")
+        return
+
+    by_platform: dict[str, list[dict]] = {}
+    for f in failures:
+        by_platform.setdefault(f["platform"], []).append(f)
+
+    for platform in sorted(by_platform):
+        rows = by_platform[platform]
+        screenshots_dir = FAILURE_SCREENSHOTS_DIR / platform
+        table = Table(
+            title=f"{platform} ({len(rows)})",
+            show_lines=False,
+            title_justify="left",
+        )
+        table.add_column("flat", style="bold")
+        table.add_column("error")
+        table.add_column("url", overflow="fold")
+        for r in rows:
+            table.add_row(str(r["flat_id"]), r["error_class"], r["url"])
+        console.print(table)
+        console.print(f"[dim]screenshots: {screenshots_dir}[/dim]\n")
 
 
 def completeness_ok(profile: Profile, flat: dict) -> tuple[bool, str | None]:

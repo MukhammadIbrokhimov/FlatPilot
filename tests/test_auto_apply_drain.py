@@ -249,6 +249,155 @@ def test_drain_true_no_cooldown_applies_immediately(tmp_db):
     assert mocked_apply.call_count == 1
 
 
+def test_drain_complete_when_all_reachable_caps_hit(tmp_db):
+    # FlatPilot-rv2: drain loop's exit predicate. Two reachable platforms
+    # (wg-gesucht, kleinanzeigen, both with fillers + cap>0), both at cap.
+    from flatpilot.auto_apply import drain_complete
+
+    profile = Profile.load_example().model_copy(
+        update={
+            "auto_apply": AutoApplySettings(
+                daily_cap_per_platform={"wg-gesucht": 1, "kleinanzeigen": 1},
+                cooldown_seconds_per_platform={"wg-gesucht": 120, "kleinanzeigen": 120},
+            ),
+            "saved_searches": [SavedSearch(name="ss1", auto_apply=True)],
+        }
+    )
+    fid_wg = _seed_flat(tmp_db, external_id="wg", platform="wg-gesucht")
+    fid_ka = _seed_flat(tmp_db, external_id="ka", platform="kleinanzeigen")
+    now = datetime.now(UTC).isoformat()
+    _seed_application(
+        tmp_db, flat_id=fid_wg, platform="wg-gesucht",
+        status="submitted", applied_at=now,
+    )
+    _seed_application(
+        tmp_db, flat_id=fid_ka, platform="kleinanzeigen",
+        status="submitted", applied_at=now,
+    )
+
+    assert drain_complete(tmp_db, profile, empty_pass_streak=0) is True
+
+
+def test_drain_not_complete_when_a_platform_has_remaining_cap(tmp_db):
+    from flatpilot.auto_apply import drain_complete
+
+    profile = Profile.load_example().model_copy(
+        update={
+            "auto_apply": AutoApplySettings(
+                daily_cap_per_platform={"wg-gesucht": 5, "kleinanzeigen": 1},
+            ),
+            "saved_searches": [SavedSearch(name="ss1", auto_apply=True)],
+        }
+    )
+    fid_ka = _seed_flat(tmp_db, external_id="ka", platform="kleinanzeigen")
+    _seed_application(
+        tmp_db, flat_id=fid_ka, platform="kleinanzeigen", status="submitted",
+        applied_at=datetime.now(UTC).isoformat(),
+    )
+    # wg-gesucht has 5 cap remaining; not done.
+    assert drain_complete(tmp_db, profile, empty_pass_streak=0) is False
+
+
+def test_drain_complete_ignores_unreachable_platforms(tmp_db):
+    # inberlinwohnen has cap=20 in defaults but no filler registered, so
+    # the drain loop must not wait on it. Reachable wg-gesucht is at cap.
+    from flatpilot.auto_apply import drain_complete
+
+    profile = Profile.load_example().model_copy(
+        update={
+            "auto_apply": AutoApplySettings(
+                daily_cap_per_platform={"wg-gesucht": 1, "inberlinwohnen": 20},
+            ),
+            "saved_searches": [SavedSearch(name="ss1", auto_apply=True)],
+        }
+    )
+    fid = _seed_flat(tmp_db, external_id="wg", platform="wg-gesucht")
+    _seed_application(
+        tmp_db, flat_id=fid, platform="wg-gesucht", status="submitted",
+        applied_at=datetime.now(UTC).isoformat(),
+    )
+    assert drain_complete(tmp_db, profile, empty_pass_streak=0) is True
+
+
+def test_drain_complete_when_empty_streak_threshold_reached(tmp_db):
+    # Two passes in a row with zero submits → bail even if cap not hit.
+    from flatpilot.auto_apply import drain_complete
+
+    profile = Profile.load_example().model_copy(
+        update={
+            "auto_apply": AutoApplySettings(daily_cap_per_platform={"wg-gesucht": 20}),
+            "saved_searches": [SavedSearch(name="ss1", auto_apply=True)],
+        }
+    )
+    assert drain_complete(tmp_db, profile, empty_pass_streak=2) is True
+    assert drain_complete(tmp_db, profile, empty_pass_streak=1) is False
+
+
+def test_drain_complete_when_no_reachable_platforms(tmp_db):
+    # Every configured platform is either cap=0 or has no filler.
+    from flatpilot.auto_apply import drain_complete
+
+    profile = Profile.load_example().model_copy(
+        update={
+            "auto_apply": AutoApplySettings(
+                # cap=0 disables auto-apply on wg-gesucht; inberlinwohnen
+                # has no filler. Nothing for drain to do.
+                daily_cap_per_platform={"wg-gesucht": 0, "inberlinwohnen": 20},
+            ),
+            "saved_searches": [SavedSearch(name="ss1", auto_apply=True)],
+        }
+    )
+    assert drain_complete(tmp_db, profile, empty_pass_streak=0) is True
+
+
+def test_collect_failures_dedups_retries_per_flat(tmp_db):
+    # Same flat fails twice with the same error class → one record.
+    from flatpilot.auto_apply import collect_failures_since
+
+    fid = _seed_flat(tmp_db, external_id="bad", platform="kleinanzeigen")
+    base = datetime.now(UTC).isoformat()
+    _seed_application(
+        tmp_db, flat_id=fid, platform="kleinanzeigen", status="failed",
+        applied_at=base,
+        notes="kleinanzeigen: neither success nor error indicator appeared",
+    )
+    _seed_application(
+        tmp_db, flat_id=fid, platform="kleinanzeigen", status="failed",
+        applied_at=base,
+        notes="kleinanzeigen: neither success nor error indicator appeared",
+    )
+    failures = collect_failures_since(tmp_db, "1970-01-01T00:00:00+00:00")
+    assert len(failures) == 1
+    assert failures[0]["flat_id"] == fid
+    assert failures[0]["platform"] == "kleinanzeigen"
+
+
+def test_collect_failures_excludes_auto_skipped_rows(tmp_db):
+    # auto_skipped: rows are not filler bugs and must not appear in the summary.
+    from flatpilot.auto_apply import collect_failures_since
+
+    fid = _seed_flat(tmp_db, external_id="skip", platform="inberlinwohnen")
+    _seed_application(
+        tmp_db, flat_id=fid, platform="inberlinwohnen", status="failed",
+        applied_at=datetime.now(UTC).isoformat(),
+        notes="auto_skipped: filler not registered for platform 'inberlinwohnen'",
+    )
+    assert collect_failures_since(tmp_db, "1970-01-01T00:00:00+00:00") == []
+
+
+def test_collect_failures_respects_since_iso(tmp_db):
+    from flatpilot.auto_apply import collect_failures_since
+
+    fid = _seed_flat(tmp_db, external_id="old", platform="wg-gesucht")
+    _seed_application(
+        tmp_db, flat_id=fid, platform="wg-gesucht", status="failed",
+        applied_at="2020-01-01T00:00:00+00:00",
+        notes="wg-gesucht: selector_missing",
+    )
+    # Cutoff is after the row → excluded.
+    assert collect_failures_since(tmp_db, "2025-01-01T00:00:00+00:00") == []
+
+
 def test_drain_processes_multiple_flats_in_one_run(tmp_db):
     # Drain's whole point: one flatpilot run invocation submits to several
     # flats by sleeping through cooldowns between them.

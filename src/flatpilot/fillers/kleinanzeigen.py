@@ -41,6 +41,7 @@ through to :class:`SubmitVerificationError`.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -94,6 +95,13 @@ class _Selectors:
     )
     success_marker: str = "form#viewad-contact-form .ajaxform-success"
     error_marker: str = "form#viewad-contact-form .outcomebox-error"
+    # Kleinanzeigen's full-page server-error template ("Huch, da ist ein
+    # Fehler (400) aufgetreten") — rendered when the submit POST is
+    # rejected by the backend and the page navigates away from the form.
+    # Neither success_marker nor error_marker (both scoped to the form)
+    # exist on this page. Playwright text-regex selector matches the
+    # bracketed status code in the heading. FlatPilot-b13.
+    server_error_marker: str = r"text=/Fehler\s*\[\d+\]/"
 
 
 SELECTORS = _Selectors()
@@ -119,6 +127,11 @@ FIELD_WAIT_MS = 3_000
 # to a category page like /s-wohnung-mieten/<location>/<cat-loc-id>; the
 # category page returns 200 so a status check alone misses it.
 LISTING_URL_MARKER = "/s-anzeige/"
+
+# Extracts the bracketed HTTP status code from kleinanzeigen's server-
+# error template heading ("Fehler [400]"). The brackets are part of the
+# rendered template — not a regex artifact. FlatPilot-b13.
+SERVER_ERROR_CODE_RE = re.compile(r"Fehler\s*\[(\d+)\]")
 
 
 @register
@@ -267,9 +280,15 @@ class KleinanzeigenFiller:
 
     def _verify_submitted(self, pg: Any, contact_url: str, listing_url: str) -> bool:
         # Kleinanzeigen submits via XHR to /s-anbieter-kontaktieren.json
-        # so the form URL never changes. Wait for either the success or
-        # error indicator to become visible; treat a timeout as a verify
-        # failure too — silence after a click is not success.
+        # so the form URL never changes on the happy path. Wait for either
+        # the success or error indicator to become visible; treat a timeout
+        # as a verify failure too — silence after a click is not success.
+        # When the submit POST is rejected at the HTTP layer, the page
+        # navigates to a full-page server-error template ("Fehler [400]");
+        # neither banner under the form renders because the form is gone.
+        # FlatPilot-b13: probe for that template so the failure surfaces
+        # the status code instead of the misleading "neither indicator"
+        # message.
         success = pg.locator(SELECTORS.success_marker).first
         error = pg.locator(SELECTORS.error_marker).first
         try:
@@ -282,11 +301,37 @@ class KleinanzeigenFiller:
             raise SubmitVerificationError(
                 f"{self.platform}: submit failed — error banner visible at {contact_url}"
             )
+        code = self._detect_server_error_code(pg)
+        if code is not None:
+            self._capture_failure_screenshot(pg, listing_url)
+            raise SubmitVerificationError(
+                f"{self.platform}: submit rejected with HTTP {code} server-error "
+                f"page at {pg.url} (listing {contact_url})"
+            )
         self._capture_failure_screenshot(pg, listing_url)
         raise SubmitVerificationError(
             f"{self.platform}: neither success nor error indicator appeared "
             f"within {SUBMIT_NAV_WAIT_MS}ms after submit at {contact_url}"
         )
+
+    def _detect_server_error_code(self, pg: Any) -> str | None:
+        # Text-regex locator (`text=/Fehler\s*\[\d+\]/`) is the durable
+        # signal: the template heading does not have a stable class hook.
+        # Any failure to query / read is swallowed so it can never mask
+        # the downstream SubmitVerificationError — the diagnostic improvement
+        # is best-effort, like the failure-screenshot helper.
+        try:
+            marker = pg.locator(SELECTORS.server_error_marker).first
+            if marker.count() == 0:
+                return None
+            text = marker.inner_text()
+        except Exception as exc:
+            logger.debug(
+                "%s: server-error marker probe failed: %s", self.platform, exc
+            )
+            return None
+        match = SERVER_ERROR_CODE_RE.search(text or "")
+        return match.group(1) if match else None
 
     def _maybe_screenshot(
         self,

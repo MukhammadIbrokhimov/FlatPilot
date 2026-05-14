@@ -39,10 +39,12 @@ class _Locator:
         count: int = 1,
         visible: bool = True,
         click_handler=None,
+        text: str = "",
     ) -> None:
         self._count = count
         self._visible = visible
         self.click_handler = click_handler
+        self._text = text
         self.fill_calls: list[str] = []
         self.set_files_calls: list[list[str]] = []
         self.click_calls: int = 0
@@ -73,6 +75,9 @@ class _Locator:
             raise PlaywrightTimeoutError(
                 f"locator never became {state} within {timeout}ms"
             )
+
+    def inner_text(self) -> str:
+        return self._text
 
     def screenshot(self, **kwargs) -> None:
         pass
@@ -220,6 +225,48 @@ def test_fill_submit_raises_when_error_banner_visible(fake_session):
 
 def test_fill_submit_raises_when_neither_indicator_appears(fake_session):
     # No click_handler — neither success nor error appears within timeout.
+    filler = KleinanzeigenFiller()
+    with pytest.raises(SubmitVerificationError, match="neither success nor error"):
+        filler.fill(
+            listing_url=_LISTING_URL,
+            message="Hallo.",
+            attachments=[],
+            submit=True,
+        )
+
+
+def test_fill_submit_surfaces_status_code_when_server_error_page_visible(fake_session):
+    # FlatPilot-b13: when the submit POST is rejected with HTTP 4xx/5xx,
+    # kleinanzeigen navigates to a full-page error template — neither
+    # success_marker nor error_marker render under the (now-gone) form.
+    # The filler must detect the "Fehler [<code>]" heading and surface
+    # the status code in SubmitVerificationError, replacing the prior
+    # generic "neither indicator" message that hid the failure mode.
+    server_error = _Locator(count=1, text="Fehler [400]")
+    fake_session._locators[SELECTORS.server_error_marker] = server_error
+    fake_session.submit_locator.click_handler = lambda: setattr(
+        fake_session, "url", "https://www.kleinanzeigen.de/error"
+    )
+
+    filler = KleinanzeigenFiller()
+    with pytest.raises(SubmitVerificationError, match="HTTP 400 server-error"):
+        filler.fill(
+            listing_url=_LISTING_URL,
+            message="Hallo.",
+            attachments=[],
+            submit=True,
+        )
+
+
+def test_server_error_marker_without_recognizable_code_falls_through(fake_session):
+    # Defensive: if kleinanzeigen restyles the error page so the text
+    # matches our locator but the bracketed status code is missing
+    # (e.g. layout change drops the brackets), we must fall through to
+    # the generic "neither indicator" branch rather than raising with
+    # a confusing "HTTP None" or crashing on .group() of a None match.
+    marker = _Locator(count=1, text="Fehler — Seite nicht erreichbar")
+    fake_session._locators[SELECTORS.server_error_marker] = marker
+
     filler = KleinanzeigenFiller()
     with pytest.raises(SubmitVerificationError, match="neither success nor error"):
         filler.fill(

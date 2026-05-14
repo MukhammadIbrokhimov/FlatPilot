@@ -216,6 +216,56 @@ def test_skips_flat_with_recent_listing_expired_row(tmp_db):
     mocked.assert_not_called()
 
 
+def test_skips_flat_with_existing_filler_not_registered_row(tmp_db):
+    # FlatPilot-289: when a flat's platform has no registered filler
+    # (today: inberlinwohnen, immoscout24), completeness_ok writes one
+    # 'auto_skipped: filler not registered' row. The queue-selector SQL
+    # must then exclude the flat on subsequent passes so the table does
+    # not accumulate one such row per pass per matched flat. No TTL on
+    # this exclusion — the state is permanent until a filler is added.
+    from flatpilot.auto_apply import run_pipeline_apply
+    from flatpilot.profile import profile_hash
+
+    profile = _profile_with_one_auto_search()
+    save_profile(profile)
+    flat_id = _seed_flat(tmp_db, platform="inberlinwohnen")
+    _seed_match(
+        tmp_db,
+        flat_id=flat_id,
+        profile_hash=profile_hash(profile),
+        matched_saved_searches=["ss1"],
+    )
+    earlier = datetime.now(UTC).isoformat()
+    tmp_db.execute(
+        "INSERT INTO applications (flat_id, platform, listing_url, title, "
+        "applied_at, method, attachments_sent_json, status, notes) "
+        "VALUES (?, 'inberlinwohnen', 'https://x', 'T', ?, 'auto', '[]', "
+        "'failed', "
+        "'auto_skipped: filler not registered for platform "
+        "''inberlinwohnen''')",
+        (flat_id, earlier),
+    )
+
+    before = tmp_db.execute(
+        "SELECT COUNT(*) AS n FROM applications WHERE flat_id = ?",
+        (flat_id,),
+    ).fetchone()["n"]
+
+    with patch("flatpilot.auto_apply.apply_to_flat") as mocked:
+        run_pipeline_apply(profile, Console())
+
+    after = tmp_db.execute(
+        "SELECT COUNT(*) AS n FROM applications WHERE flat_id = ?",
+        (flat_id,),
+    ).fetchone()["n"]
+
+    mocked.assert_not_called()
+    # No new auto_skipped row added on this pass — the SELECT excluded
+    # the flat outright. Without the exclusion, _try_flat would have
+    # written a second 'filler not registered' row via completeness_ok.
+    assert after == before
+
+
 def test_retries_flat_with_old_listing_expired_row(tmp_db):
     # FlatPilot-tgw: TTL on the listing_expired exclusion ensures a real
     # selector regression heals once the selectors are fixed. After 7

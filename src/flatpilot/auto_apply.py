@@ -212,9 +212,23 @@ def run_pipeline_apply(
               AND a.notes LIKE 'auto_skipped: listing_expired%'
               AND a.applied_at >= ?
           )
+          -- No TTL: a missing filler is permanent until a code change
+          -- lands. Excluding for the lifetime of the auto_skipped row
+          -- prevents unbounded growth on platforms we knowingly don't
+          -- auto-apply on (FlatPilot-6pq scopes that decision). The
+          -- first occurrence still writes a row for visibility.
+          -- FlatPilot-289.
+          AND NOT EXISTS (
+            SELECT 1 FROM applications a
+            WHERE a.flat_id = m.flat_id
+              AND a.user_id = ?
+              AND a.method = 'auto'
+              AND a.status = 'failed'
+              AND a.notes LIKE 'auto_skipped: filler not registered%'
+          )
         ORDER BY m.decided_at ASC
         """,
-        (phash, user_id, user_id, user_id, expired_threshold),
+        (phash, user_id, user_id, user_id, expired_threshold, user_id),
     ).fetchall()
 
     saved_search_by_name = {ss.name: ss for ss in profile.saved_searches}

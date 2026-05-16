@@ -79,6 +79,15 @@ def run_match(user_id: int = DEFAULT_USER_ID) -> MatchSummary:
 
         decision = "match" if not base_reasons or matched_saved else "reject"
 
+        logger.debug(
+            "matcher: platform=%s external_id=%s decision=%s reasons=%s saved=%s",
+            flat.get("platform"),
+            flat.get("external_id"),
+            decision,
+            base_reasons,
+            matched_saved,
+        )
+
         conn.execute(
             """
             INSERT OR IGNORE INTO matches

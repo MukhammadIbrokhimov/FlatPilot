@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 
 from flatpilot.matcher.runner import run_match
@@ -111,3 +112,30 @@ def test_full_reject_when_neither_base_nor_saved_search_matches(tmp_db):
     assert row["decision"] == "reject"
     assert json.loads(row["matched_saved_searches_json"]) == []
     assert "rent_too_high" in json.loads(row["decision_reasons_json"])
+
+
+def test_run_match_logs_decision_at_debug_with_external_id(tmp_db, caplog):
+    base = Profile.load_example()
+    profile = base.model_copy(update={"rent_max_warm": 1500})
+    save_profile(profile)
+    _seed_flat(
+        tmp_db,
+        external_id="ext-debug-1",
+        platform="wg-gesucht",
+        rent_warm_eur=2500,
+        rooms=profile.rooms_min,
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="flatpilot.matcher.runner"):
+        run_match()
+
+    matcher_records = [
+        r for r in caplog.records
+        if r.name == "flatpilot.matcher.runner" and r.levelno == logging.DEBUG
+    ]
+    assert matcher_records, "expected a DEBUG log line per evaluated flat"
+    msg = matcher_records[-1].getMessage()
+    assert "external_id=ext-debug-1" in msg
+    assert "platform=wg-gesucht" in msg
+    assert "decision=reject" in msg
+    assert "rent_too_high" in msg

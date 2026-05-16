@@ -14,6 +14,7 @@ from flatpilot.matcher.filters import (
     filter_radius,
     filter_rent_band,
     filter_rooms_band,
+    filter_short_term,
     filter_wbs,
 )
 from flatpilot.profile import WBS, Profile
@@ -279,6 +280,114 @@ def test_contract_passes_when_flat_field_missing():
     profile = _profile(min_contract_months=12)
     flat: dict = {}
     ok, reason = filter_contract(flat, profile)
+    assert ok is True and reason is None
+
+
+# --- filter_short_term --------------------------------------------------
+
+def test_short_term_passes_when_disabled():
+    profile = _profile(exclude_short_term=False)
+    flat = {"title": "Zwischenmiete für 2 Wochen", "description": ""}
+    ok, reason = filter_short_term(flat, profile)
+    assert ok is True and reason is None
+
+
+def test_short_term_rejects_zwischenmiete_in_title():
+    profile = _profile(exclude_short_term=True)
+    flat = {"title": "Zwischenmiete in Mitte", "description": ""}
+    ok, reason = filter_short_term(flat, profile)
+    assert ok is False
+    assert reason == "short_term_listing"
+
+
+def test_short_term_rejects_befristet_in_description():
+    profile = _profile(exclude_short_term=True)
+    flat = {"title": "Schöne 2-Zimmer-Wohnung", "description": "Befristet auf ein Jahr"}
+    ok, reason = filter_short_term(flat, profile)
+    assert ok is False
+    assert reason == "short_term_listing"
+
+
+def test_short_term_rejects_short_term_with_hyphen():
+    profile = _profile(exclude_short_term=True)
+    flat = {"title": "Lovely Berlin short-term flat", "description": ""}
+    ok, reason = filter_short_term(flat, profile)
+    assert ok is False
+    assert reason == "short_term_listing"
+
+
+def test_short_term_rejects_numeric_weeks():
+    profile = _profile(exclude_short_term=True)
+    flat = {"title": "Studio frei für 2 Wochen", "description": ""}
+    ok, reason = filter_short_term(flat, profile)
+    assert ok is False
+    assert reason == "short_term_listing"
+
+
+def test_short_term_rejects_numeric_short_months():
+    profile = _profile(exclude_short_term=True)
+    flat = {"title": "Wohnung", "description": "frei für 3 Monate"}
+    ok, reason = filter_short_term(flat, profile)
+    assert ok is False
+    assert reason == "short_term_listing"
+
+
+def test_short_term_passes_when_month_count_above_short_range():
+    # "12 Monate" must not match \b[1-5]\s*monate?\b — only 1-5 should fire.
+    profile = _profile(exclude_short_term=True)
+    flat = {"title": "Wohnung ab Juni", "description": "Mindestlaufzeit 12 Monate"}
+    ok, reason = filter_short_term(flat, profile)
+    assert ok is True and reason is None
+
+
+def test_short_term_passes_for_typical_long_term_listing():
+    profile = _profile(exclude_short_term=True)
+    flat = {
+        "title": "Helle 2-Zimmer-Wohnung in Kreuzberg",
+        "description": "Unbefristeter Mietvertrag, Erstbezug nach Sanierung.",
+    }
+    ok, reason = filter_short_term(flat, profile)
+    assert ok is True and reason is None
+
+
+def test_short_term_date_range_short_span_rejects():
+    # 60-day window vs profile min of 6 months (180 days) → reject.
+    profile = _profile(exclude_short_term=True, min_contract_months=6)
+    flat = {
+        "title": "Wohnung verfügbar",
+        "description": "Verfügbar 01.06.2026 bis 31.07.2026.",
+    }
+    ok, reason = filter_short_term(flat, profile)
+    assert ok is False
+    assert reason == "short_term_listing"
+
+
+def test_short_term_date_range_long_span_passes():
+    profile = _profile(exclude_short_term=True, min_contract_months=6)
+    flat = {
+        "title": "Wohnung verfügbar",
+        "description": "Verfügbar 01.06.2026 bis 30.06.2027.",
+    }
+    ok, reason = filter_short_term(flat, profile)
+    assert ok is True and reason is None
+
+
+def test_short_term_date_range_skipped_when_no_min_contract():
+    # Without a profile minimum we don't second-guess a date range that
+    # didn't match any keyword pattern.
+    profile = _profile(exclude_short_term=True, min_contract_months=None)
+    flat = {
+        "title": "Wohnung",
+        "description": "Vermietung 01.06.2026 bis 30.06.2026.",
+    }
+    ok, reason = filter_short_term(flat, profile)
+    assert ok is True and reason is None
+
+
+def test_short_term_passes_when_title_and_description_empty():
+    profile = _profile(exclude_short_term=True)
+    flat = {"title": "", "description": None}
+    ok, reason = filter_short_term(flat, profile)
     assert ok is True and reason is None
 
 

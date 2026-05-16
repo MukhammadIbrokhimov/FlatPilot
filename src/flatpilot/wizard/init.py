@@ -467,6 +467,10 @@ def run(console: Console | None = None) -> Path | None:
         default=min_contract_default,
         min_value=0,
     )
+    exclude_short_term = Confirm.ask(
+        "Exclude short-term / Zwischenmiete listings (title/description heuristic)?",
+        default=defaults.exclude_short_term,
+    )
 
     out.rule("Employment & income")
     status = Prompt.ask(
@@ -512,6 +516,7 @@ def run(console: Console | None = None) -> Path | None:
         "smoker": smoker,
         "furnished_pref": furnished_pref,
         "min_contract_months": min_contract_months,
+        "exclude_short_term": exclude_short_term,
         "wbs": wbs,
         "notifications": notifications,
     }

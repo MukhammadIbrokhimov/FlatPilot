@@ -17,6 +17,7 @@ false-positive notification.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from datetime import date, timedelta
 from typing import Any
@@ -127,6 +128,58 @@ def filter_contract(flat: Mapping[str, Any], profile: Profile) -> FilterResult:
     return True, None
 
 
+# Short-term / Zwischenmiete heuristics. Title + description are the only
+# fields cheap scraping gives us; min_contract_months is detail-page-only
+# and so almost always None — see FlatPilot-ko1 for the definitive path.
+_SHORT_TERM_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        # Leading \b stops "unbefristet" / "unbefristeter" (long-term) from
+        # tripping the "befristet" keyword. Same trick is cheap on the
+        # others and keeps the heuristic from biting substring lookalikes.
+        r"\bzwischenmiete",
+        r"\bbefristet",
+        r"\btemporär",
+        r"\btemporary",
+        r"\bauf zeit\b",
+        r"\buntermiete",
+        r"\bshort.?term",
+        r"\bkurzzeit",
+        r"\bmöbliert auf zeit",
+        r"\b\d+\s*(?:woche|wochen|tage)\b",
+        r"\b[1-5]\s*monate?\b",
+    )
+)
+_DATE_RANGE_RE = re.compile(
+    r"(\d{2}\.\d{2}\.\d{4})\s*(?:bis|-)\s*(\d{2}\.\d{2}\.\d{4})"
+)
+
+
+def filter_short_term(flat: Mapping[str, Any], profile: Profile) -> FilterResult:
+    if not profile.exclude_short_term:
+        return True, None
+    text = " ".join(
+        str(flat.get(f) or "") for f in ("title", "description")
+    ).lower()
+    if not text.strip():
+        return True, None
+    for pattern in _SHORT_TERM_PATTERNS:
+        if pattern.search(text):
+            return False, "short_term_listing"
+    if profile.min_contract_months is not None:
+        m = _DATE_RANGE_RE.search(text)
+        if m:
+            try:
+                start = date(*(int(x) for x in reversed(m.group(1).split("."))))
+                end = date(*(int(x) for x in reversed(m.group(2).split("."))))
+            except ValueError:
+                return True, None
+            span_days = (end - start).days
+            if 0 < span_days < profile.min_contract_months * 30:
+                return False, "short_term_listing"
+    return True, None
+
+
 def filter_radius(flat: Mapping[str, Any], profile: Profile) -> FilterResult:
     # Radius check is skipped when the profile has no home coordinates yet
     # (e.g. before the setup wizard geocodes the user's address) — rather
@@ -159,6 +212,7 @@ FILTERS: list[Filter] = [
     filter_move_in,
     filter_furnished,
     filter_contract,
+    filter_short_term,
 ]
 
 

@@ -203,6 +203,7 @@ class Profile(BaseModel):
     smoker: bool = False
     furnished_pref: FurnishedPref = "any"
     min_contract_months: int | None = Field(default=None, ge=0)
+    exclude_short_term: bool = True
 
     wbs: WBS = Field(default_factory=WBS)
     notifications: Notifications = Field(default_factory=Notifications)

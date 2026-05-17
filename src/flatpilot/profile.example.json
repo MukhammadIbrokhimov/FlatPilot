@@ -18,6 +18,7 @@
   "smoker": false,
   "furnished_pref": "any",
   "min_contract_months": null,
+  "exclude_short_term": true,
   "wbs": {
     "status": "none"
   },
